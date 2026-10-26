@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Desk">
+<meta name="theme-color" content="#f3efe6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14130f" media="(prefers-color-scheme: dark)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Desk</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<style>
+:root{
+  --paper:#f3efe6;--card:#fbf9f4;--ink:#1c1a15;--ink2:#5e584c;--ink3:#948d7f;--rule:#e0d9cb;
+  --accent:#c4492f;--accent-ink:#fff;--up:#2f7a4f;--down:#b8402a;--warn:#a8701b;--chip:#ebe5d8;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;--sans:"Inter Tight",system-ui,-apple-system,sans-serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --paper:#14130f;--card:#1c1b16;--ink:#efe9dc;--ink2:#b3ab9b;--ink3:#7d766a;--rule:#2e2b24;
+  --accent:#e2694c;--up:#5cbf86;--down:#ef7a60;--warn:#e0a547;--chip:#26241e}}
+:root[data-theme="dark"]{--paper:#14130f;--card:#1c1b16;--ink:#efe9dc;--ink2:#b3ab9b;--ink3:#7d766a;--rule:#2e2b24;
+  --accent:#e2694c;--up:#5cbf86;--down:#ef7a60;--warn:#e0a547;--chip:#26241e}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.45 var(--sans);-webkit-font-smoothing:antialiased}
+body{padding:env(safe-area-inset-top) 0 calc(76px + env(safe-area-inset-bottom));min-height:100vh}
+.wrap{max-width:560px;margin:0 auto;padding:12px 16px 24px}
+header{display:flex;align-items:center;justify-content:space-between;padding:10px 0 6px}
+.brand{font:600 13px var(--mono);letter-spacing:.14em;text-transform:uppercase}
+.brand b{color:var(--accent)}
+.pill{font:500 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;padding:4px 9px;border-radius:999px;background:var(--chip);color:var(--ink2)}
+.pill.live{background:var(--accent);color:var(--accent-ink)}
+.pill.warn{background:var(--warn);color:#fff}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:8px 0 4px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chip{flex:none;border:1px solid var(--rule);background:var(--card);color:var(--ink);font:500 13px var(--sans);padding:7px 12px;border-radius:999px}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.label{font:500 11px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink3)}
+.tag{display:inline-block;font:600 10.5px var(--mono);letter-spacing:.1em;text-transform:uppercase;background:var(--ink);color:var(--paper);padding:3px 7px;border-radius:3px}
+.hero{padding:14px 0 6px}
+.big{font:600 44px/1.05 var(--sans);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.delta{font:500 15px var(--mono);font-variant-numeric:tabular-nums}
+.up{color:var(--up)}.down{color:var(--down)}.muted{color:var(--ink3)}
+.card{background:var(--card);border:1px solid var(--rule);border-radius:14px;padding:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.stat{background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:11px 12px}
+.stat .v{font:600 22px var(--sans);font-variant-numeric:tabular-nums;margin-top:2px}
+.stat .s{font-size:12px;color:var(--ink3)}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.list>.item{padding:12px 0;border-top:1px solid var(--rule)}
+.list>.item:first-child{border-top:0}
+.tk{font:600 16px var(--sans)}
+.num{font-variant-numeric:tabular-nums;font-family:var(--mono);font-size:13.5px}
+.sparkgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.spark{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:8px 9px}
+.spark.sel{outline:2px solid var(--accent);outline-offset:-1px}
+.bar{height:8px;border-radius:4px;background:var(--chip);overflow:hidden;display:flex}
+.bar i{display:block;height:100%}
+.rating{font:600 11px var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:3px 7px;border-radius:4px;background:var(--chip)}
+.rating.buy,.rating.overweight{background:color-mix(in srgb,var(--up) 18%,transparent);color:var(--up)}
+.rating.sell,.rating.underweight{background:color-mix(in srgb,var(--down) 18%,transparent);color:var(--down)}
+.btn{display:block;width:100%;border:0;border-radius:12px;padding:14px;font:600 15px var(--sans);background:var(--ink);color:var(--paper);margin:8px 0}
+.btn.ghost{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
+.btn.danger{background:var(--down);color:#fff}
+.btn:disabled{opacity:.5}
+input,select{width:100%;font:15px var(--sans);padding:12px;border-radius:10px;border:1px solid var(--rule);background:var(--card);color:var(--ink);margin:6px 0 12px}
+nav{position:fixed;left:0;right:0;bottom:0;background:color-mix(in srgb,var(--paper) 88%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:1px solid var(--rule);padding:6px 8px calc(6px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;z-index:5}
+nav button{flex:1;background:none;border:0;color:var(--ink3);font:500 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:6px 0;display:flex;flex-direction:column;align-items:center;gap:3px}
+nav button.on{color:var(--accent)}
+nav svg{width:22px;height:22px}
+.sheet{position:fixed;inset:0;background:var(--paper);z-index:10;overflow-y:auto;padding:env(safe-area-inset-top) 0 40px;display:none}
+.sheet.open{display:block}
+.md h1,.md h2,.md h3{font-size:16px;margin:18px 0 6px}
+.md p,.md li{color:var(--ink2);font-size:14.5px}
+.md table{border-collapse:collapse;font-size:13px;display:block;overflow-x:auto}
+.md td,.md th{border:1px solid var(--rule);padding:4px 6px}
+.toast{position:fixed;left:16px;right:16px;bottom:calc(84px + env(safe-area-inset-bottom));background:var(--ink);color:var(--paper);padding:12px 14px;border-radius:12px;font-size:14px;z-index:20;display:none}
+.empty{color:var(--ink3);text-align:center;padding:28px 8px;font-size:14px}
+.note{font-size:12.5px;color:var(--ink3);margin-top:10px}
+a{color:var(--accent)}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">AI<b>/</b>Desk</div>
+    <div id="mode" class="pill">—</div>
+  </header>
+  <main id="view"></main>
+</div>
+
+<nav id="nav">
+  <button data-tab="home" class="on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 17l5-5 4 3 8-8"/><path d="M15 7h5v5"/></svg>Today</button>
+  <button data-tab="positions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>Holdings</button>
+  <button data-tab="decisions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="9" r="5"/><circle cx="16" cy="15" r="5"/></svg>Agents</button>
+  <button data-tab="odds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Odds</button>
+  <button data-tab="control"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v9"/><path d="M6.3 7a8 8 0 1 0 11.4 0"/></svg>Control</button>
+</nav>
+
+<div id="sheet" class="sheet"><div class="wrap" id="sheetBody"></div></div>
+<div id="toast" class="toast"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const store = {
+  get(k, d = "") { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+let cfg = { token: store.get("gh_token"), repo: store.get("gh_repo", "elijahvickers-17/trading-bot") };
+let data = null, paused = false, runs = [], tab = store.get("tab", "home"), oddsCache = {};
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const usd = (n, d = 2) => n == null ? "—" : (n < 0 ? "-" : "") + "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
+const pct = (n, d = 2) => n == null ? "—" : (n > 0 ? "+" : "") + (n * 100).toFixed(d) + "%";
+const prob = (n, d = 0) => n == null ? "—" : (n * 100).toFixed(d) + "%";
+const sign = n => n > 0 ? "up" : n < 0 ? "down" : "";
+const ago = iso => { const m = Math.round((Date.now() - new Date(iso)) / 60000); return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; };
+function toast(msg, ms = 3200) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
+
+async function gh(path, opts = {}) {
+  const r = await fetch(`https://api.github.com/repos/${cfg.repo}/${path}`, {
+    ...opts,
+    headers: { Authorization: `Bearer ${cfg.token}`, Accept: opts.raw ? "application/vnd.github.raw+json" : "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers || {}) },
+    cache: "no-store",
+  });
+  if (r.status === 404 && opts.allow404) return null;
+  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 140)}`);
+  if (r.status === 204) return true;
+  return opts.raw ? r.text() : r.json();
+}
+
+async function load() {
+  try {
+    const [status, stop, rr] = await Promise.all([
+      gh("contents/journal/status.json", { raw: true, allow404: true }),
+      gh("contents/STOP", { allow404: true }),
+      gh("actions/runs?per_page=8", {}).catch(() => ({ workflow_runs: [] })),
+    ]);
+    data = status ? JSON.parse(status) : null;
+    paused = !!stop;
+    runs = rr.workflow_runs || [];
+    store.set("cache", status || "");
+  } catch (e) {
+    const c = store.get("cache"); if (c) data = JSON.parse(c);
+    toast("Couldn't refresh: " + e.message);
+  }
+  render();
+}
+
+function header() {
+  const m = $("#mode");
+  if (!data) { m.textContent = "No data yet"; m.className = "pill"; return; }
+  if (paused || data.stopped) { m.textContent = "Paused"; m.className = "pill warn"; }
+  else if (data.halted) { m.textContent = "Halted"; m.className = "pill warn"; }
+  else { m.textContent = data.mode === "live" ? "Live money" : "Paper"; m.className = "pill" + (data.mode === "live" ? " live" : ""); }
+}
+
+function equityChart(points, w = 520, h = 120) {
+  if (!points || points.length < 2) return `<div class="empty">The chart fills in after a few runs.</div>`;
+  const v = points.map(p => p[1]), lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
+  const xy = v.map((y, i) => [i * w / (v.length - 1), h - 6 - (y - lo) / span * (h - 12)]);
+  const line = xy.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
+  const col = v[v.length - 1] >= v[0] ? "var(--up)" : "var(--down)";
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" role="img" aria-label="Equity over time">
+    <path d="${line} L${w} ${h} L0 ${h}Z" fill="${col}" opacity=".08"/><path d="${line}" fill="none" stroke="${col}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
+    <div class="row note"><span>${usd(lo, 0)} low</span><span>${usd(hi, 0)} high</span></div>`;
+}
+
+function running() {
+  const r = runs.find(r => r.status !== "completed");
+  return r ? `<div class="card row"><span><span class="tag">Running</span> ${esc(r.name)}</span><span class="muted">${ago(r.run_started_at || r.created_at)}</span></div>` : "";
+}
+
+function viewHome() {
+  if (!data) return `${running()}<div class="card empty">No results yet. The first run writes them — or press <b>Run analysis now</b> in Control.</div>`;
+  const s = data.stats, b = Object.entries(data.benchmarks || {});
+  const beat = b.filter(([, r]) => r != null);
+  return `
+  ${running()}
+  <div class="hero">
+    <div class="label">Bot equity · since ${new Date(data.started).toLocaleDateString()}</div>
+    <div class="big">${usd(data.equity)}</div>
+    <div class="delta ${sign(data.return)}">${pct(data.return)} · ${usd(data.equity - data.capital)}</div>
+  </div>
+  <div class="card">${equityChart(data.equity_curve)}</div>
+  <div class="label" style="margin:16px 0 8px">Versus just holding</div>
+  <div class="grid">
+    ${beat.map(([k, r]) => `<div class="stat"><div class="label">${esc(k)}</div><div class="v ${sign(r)}">${pct(r)}</div>
+      <div class="s">${data.return > r ? "Bot is ahead" : "Bot is behind"} by ${prob(Math.abs(data.return - r), 2)}</div></div>`).join("")}
+  </div>
+  <div class="label" style="margin:16px 0 8px">Scorecard</div>
+  <div class="grid">
+    <div class="stat"><div class="label">Win rate</div><div class="v">${s.win_rate == null ? "—" : Math.round(s.win_rate * 100) + "%"}</div><div class="s">${s.closed_trades} closed trade${s.closed_trades === 1 ? "" : "s"}</div></div>
+    <div class="stat"><div class="label">Profit factor</div><div class="v">${s.profit_factor == null ? "—" : s.profit_factor.toFixed(2)}</div><div class="s">wins ÷ losses ($)</div></div>
+    <div class="stat"><div class="label">Avg win / loss</div><div class="v" style="font-size:17px">${usd(s.avg_win, 0)} / ${usd(s.avg_loss, 0)}</div><div class="s">per closed trade</div></div>
+    <div class="stat"><div class="label">Worst drop</div><div class="v down">${pct(-s.max_drawdown)}</div><div class="s">peak to trough</div></div>
+  </div>
+  <p class="note">Updated ${ago(data.updated)}. ${s.closed_trades < 20 ? "Under 20 closed trades: too few to judge the win rate yet." : ""}</p>`;
+}
+
+function viewPositions() {
+  if (!data) return `<div class="empty">Nothing yet.</div>`;
+  const ps = data.positions || [];
+  const invested = ps.reduce((a, p) => a + p.value, 0);
+  return `
+  <div class="hero"><div class="label">Invested</div><div class="big">${usd(invested, 0)}</div>
+    <div class="delta muted">${usd(data.equity - invested, 0)} in cash · ${ps.length} position${ps.length === 1 ? "" : "s"}</div></div>
+  <div class="card list">${ps.length ? ps.map(p => {
+    const toStop = 1 - p.stop / p.price;
+    return `<div class="item">
+      <div class="row"><span class="tk">${esc(p.ticker)}</span><span class="num ${sign(p.pnl)}">${usd(p.pnl)} · ${pct(p.pnl_pct)}</span></div>
+      <div class="row muted num" style="font-size:12.5px;margin-top:3px"><span>${(+p.qty).toLocaleString(undefined, { maximumFractionDigits: 6 })} @ ${usd(p.entry)}</span><span>now ${usd(p.price)}</span></div>
+      <div class="row" style="margin-top:8px;font-size:12.5px"><span class="muted">Stop ${usd(p.stop)} · ${prob(toStop, 1)} below</span><span class="muted">${p.tp_taken ? "½ profit taken · " : ""}since ${esc(p.since || "—")}</span></div>
+    </div>`;
+  }).join("") : `<div class="empty">No open positions.</div>`}</div>
+  <div class="label" style="margin:18px 0 8px">Recent trades</div>
+  <div class="card list">${(data.trades || []).slice(0, 30).map(t => `<div class="item">
+     <div class="row"><span><b>${esc(t.side).toUpperCase()}</b> ${esc(t.ticker)}</span><span class="num ${sign(t.realized_pnl)}">${t.realized_pnl != null ? usd(t.realized_pnl) : t.price ? usd(t.price) : ""}</span></div>
+     <div class="row muted" style="font-size:12.5px"><span>${esc(t.reason)}</span><span>${esc((t.time || "").slice(5, 16))}</span></div></div>`).join("") || `<div class="empty">No trades yet.</div>`}</div>`;
+}
+
+function viewDecisions() {
+  if (!data) return `<div class="empty">Nothing yet.</div>`;
+  const ds = data.decisions || [];
+  return `<div class="hero"><div class="label">Agent team</div><div style="font:600 22px var(--sans)">Analysts → bull vs bear → trader → risk team</div>
+    <p class="note">Tap a decision for the full reasoning.</p></div>
+  <div class="card list">${ds.map((d, i) => `<div class="item" onclick="openReport(${i})">
+     <div class="row"><span class="tk">${esc(d.ticker)}</span><span class="rating ${esc((d.rating || "").toLowerCase())}">${esc(d.rating)}</span></div>
+     <div class="row" style="font-size:13px;margin-top:4px"><span>${d.action === "none" ? `<span class="muted">${esc(d.detail || "no trade")}</span>` : `<b>${esc(d.action)}</b>`}</span></div>
+     ${d.tm_verdict ? `<div style="font-size:12.5px;margin-top:4px" class="muted">Time Machine: ${esc(d.tm_verdict)}</div>` : ""}
+     <div class="muted" style="font-size:12px;margin-top:4px">${esc((d.time || "").slice(0, 16))}${d.minutes ? ` · ${d.minutes} min` : ""}</div></div>`).join("") || `<div class="empty">No decisions yet.</div>`}</div>`;
+}
+
+async function openReport(i) {
+  const d = data.decisions[i];
+  const date = (d.time || "").slice(0, 10);
+  sheet(`<div class="label">${esc(date)}</div><h2 style="margin:6px 0">${esc(d.ticker)} · <span class="rating ${esc((d.rating || "").toLowerCase())}">${esc(d.rating)}</span></h2>
+    ${d.tm_summary ? `<div class="card" style="font-size:13.5px"><span class="tag">Time Machine</span><p style="margin:8px 0 0">${esc(d.tm_summary)}</p></div>` : ""}
+    <div id="rep" class="md"><p class="muted">Loading the agents' reasoning…</p></div>`);
+  if (!d.report) { $("#rep").innerHTML = `<p class="muted">${esc(d.detail || "No report saved.")}</p>`; return; }
+  try {
+    const md = await gh(`contents/reports/${encodeURIComponent(d.report)}`, { raw: true });
+    $("#rep").innerHTML = DOMPurify.sanitize(marked.parse(md));
+  } catch (e) { $("#rep").innerHTML = `<p class="muted">Couldn't load the report (${esc(e.message)}).</p>`; }
+}
+
+function oddsBars(o) {
+  if (!o) return "";
+  const seg = (v, c) => `<i style="width:${(v * 100).toFixed(1)}%;background:${c}"></i>`;
+  return `<div class="bar" style="margin:8px 0 6px">${seg(o.p_target, "var(--up)")}${seg(o.p_trail, "color-mix(in srgb,var(--up) 45%,var(--chip))")}${seg(o.p_open_at_end, "var(--ink3)")}${seg(o.p_stop, "var(--down)")}</div>
+  <div class="row num" style="font-size:12px;flex-wrap:wrap"><span class="up">target ${prob(o.p_target)}</span><span>trail ${prob(o.p_trail)}</span><span class="muted">still open ${prob(o.p_open_at_end)}</span><span class="down">stop ${prob(o.p_stop)}</span></div>
+  <div class="row num" style="font-size:12.5px;margin-top:6px"><span>profit in <b>${Math.round(o.p_profit * 100)}%</b></span><span>avg <b class="${sign(o.mean)}">${pct(o.mean)}</b></span><span class="muted">5–95%: ${pct(o.p5, 1)} … ${pct(o.p95, 1)}</span></div>`;
+}
+
+function viewOdds() {
+  const tickers = data ? [...data.watchlist.stocks, ...data.watchlist.crypto] : [];
+  const sel = store.get("odds_sel", tickers[0] || "");
+  const o = oddsCache[sel];
+  const verdictTag = v => `<span class="tag" style="background:${v === "favorable" ? "var(--up)" : v === "unfavorable" ? "var(--down)" : "var(--ink)"}">${esc(v)}</span>`;
+  setTimeout(() => sel && !oddsCache[sel] && loadOdds(sel), 0);
+  return `<div class="hero"><div class="label">Time Machine</div><div style="font:600 22px var(--sans)">Odds before any money goes in</div>
+     <p class="note">10,000 replays of each asset's own last year, plus every real day of the last two years, run through the bot's exact stop, take-profit and trailing rules, after costs.</p></div>
+   <div class="sparkgrid">${tickers.map(t => `<div class="spark ${t === sel ? "sel" : ""}" onclick="pickOdds('${esc(t)}')"><div class="label" style="color:var(--ink)">${esc(t.replace("-USD", ""))}</div>
+      <div class="muted" style="font-size:11.5px">${oddsCache[t]?.verdict ?? "tap"}</div></div>`).join("")}</div>
+   <div class="card" id="oddsCard">${!sel ? `<div class="empty">No watchlist yet.</div>` : !o ? `<div class="empty">Loading ${esc(sel)}…</div>` : o.missing ? `<div class="empty">No odds for ${esc(sel)} yet. They're computed when the agents want to buy it.</div>` : `
+     <div class="row"><span class="tk">${esc(sel)}</span>${verdictTag(o.verdict)}</div>
+     <div class="label" style="margin-top:14px">10,000 replays</div>${oddsBars(o.monte_carlo)}
+     ${o.history_similar ? `<div class="label" style="margin-top:16px">History · ${o.history_similar.days} days that looked like today</div>${oddsBars(o.history_similar)}` : ""}
+     ${o.history ? `<div class="label" style="margin-top:16px">History · all ${o.history.days} days</div>${oddsBars(o.history)}` : ""}
+     <p class="note">Rules tested: stop −${(o.rules.stop * 100).toFixed(0)}%, sell half at +${(o.rules.target * 100).toFixed(0)}%, trail ${(o.rules.trail * 100).toFixed(0)}% after +${(o.rules.trail_activate * 100).toFixed(0)}%, ${o.rules.horizon}-day horizon. A replay of the past, not a prediction.</p>`}
+   </div>`;
+}
+window.pickOdds = t => { store.set("odds_sel", t); render(); };
+async function loadOdds(t) {
+  try {
+    const raw = await gh(`contents/journal/timemachine/${encodeURIComponent(t)}.json`, { raw: true, allow404: true });
+    oddsCache[t] = raw ? JSON.parse(raw) : { missing: true };
+  } catch { oddsCache[t] = { missing: true }; }
+  if (tab === "odds") render();
+}
+
+function viewControl() {
+  const tickers = data ? [...data.watchlist.stocks, ...data.watchlist.crypto] : [];
+  return `<div class="hero"><div class="label">Control</div><div style="font:600 22px var(--sans)">${paused ? "The bot is paused" : data?.halted ? "Halted by the drawdown limit" : "The bot is running"}</div>
+    <p class="note">Buttons start a run on GitHub. It takes about a minute to start; you'll get a phone notification when it's done.</p></div>
+  ${running()}
+  <button class="btn" onclick="dispatch('daily.yml',{tickers:''},'Analysis started for the whole watchlist')">Run analysis now</button>
+  <select id="one">${tickers.map(t => `<option>${esc(t)}</option>`).join("")}</select>
+  <button class="btn ghost" onclick="dispatch('daily.yml',{tickers:$('#one').value},'Analysis started for '+$('#one').value)">Analyze just this one</button>
+  <button class="btn ghost" onclick="dispatch('monitor.yml',{},'Checking stops and prices')">Check stops &amp; refresh</button>
+  ${paused || data?.halted ? `<button class="btn" onclick="dispatch('control.yml',{action:'resume'},'Resuming')">Resume trading</button>`
+    : `<button class="btn ghost" onclick="dispatch('control.yml',{action:'pause'},'Pausing')">Pause trading</button>`}
+  <button class="btn danger" onclick="panic()">Sell everything &amp; pause</button>
+  <div class="card" style="margin-top:22px"><div class="label">Settings</div>
+    <div class="note">Repo: ${esc(cfg.repo)}<br>Token saved on this phone only.</div>
+    <button class="btn ghost" onclick="logout()">Change token</button>
+    <div class="note">Notifications: open the ntfy app and subscribe to your topic name (the NTFY_TOPIC secret).</div></div>`;
+}
+
+async function dispatch(file, inputs, msg) {
+  try {
+    await gh(`actions/workflows/${file}/dispatches`, { method: "POST", body: JSON.stringify({ ref: "main", inputs }) });
+    toast(msg + ". Refresh in a minute.");
+    setTimeout(load, 8000);
+  } catch (e) { toast("Didn't start: " + e.message, 6000); }
+}
+window.dispatch = dispatch;
+window.panic = () => sheet(`<h2>Sell everything?</h2><p>This closes every position the bot holds at market price and pauses it. Type <b>SELL</b> to confirm.</p>
+  <input id="confirm" autocomplete="off" autocapitalize="characters" placeholder="SELL">
+  <button class="btn danger" onclick="if($('#confirm').value.trim().toUpperCase()==='SELL'){closeSheet();dispatch('control.yml',{action:'panic'},'Selling everything')}else{toast('Type SELL to confirm')}">Sell everything</button>
+  <button class="btn ghost" onclick="closeSheet()">Cancel</button>`);
+window.logout = () => { store.del("gh_token"); cfg.token = ""; render(); };
+window.openReport = openReport;
+
+function sheet(html) { $("#sheetBody").innerHTML = `<div class="row" style="padding:10px 0"><span></span><button class="chip" onclick="closeSheet()">Close</button></div>` + html; $("#sheet").classList.add("open"); }
+window.closeSheet = () => $("#sheet").classList.remove("open");
+
+function viewSetup() {
+  return `<div class="hero"><div class="big" style="font-size:34px">Connect your bot</div>
+    <p class="muted">Paste a GitHub token that can read your <b>trading-bot</b> repo and start its workflows. It's stored only on this phone.</p></div>
+    <div class="label">Repo</div><input id="repo" value="${esc(cfg.repo)}" autocapitalize="off" autocorrect="off">
+    <div class="label">GitHub token</div><input id="tok" type="password" placeholder="github_pat_…" autocapitalize="off" autocorrect="off">
+    <button class="btn" onclick="saveSetup()">Connect</button>
+    <p class="note">Make it at github.com → Settings → Developer settings → Fine-grained tokens. Only select the trading-bot repo; permissions: <b>Contents: Read</b>, <b>Actions: Read and write</b>.</p>`;
+}
+window.saveSetup = async () => {
+  cfg = { token: $("#tok").value.trim(), repo: $("#repo").value.trim() };
+  try { await gh(""); store.set("gh_token", cfg.token); store.set("gh_repo", cfg.repo); toast("Connected"); load(); }
+  catch (e) { toast("That token can't open the repo: " + e.message, 6000); }
+};
+
+const views = { home: viewHome, positions: viewPositions, decisions: viewDecisions, odds: viewOdds, control: viewControl };
+function render() {
+  header();
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  $("#nav").classList.toggle("hide", !cfg.token);
+  $("#view").innerHTML = cfg.token ? views[tab]() : viewSetup();
+}
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => { tab = b.dataset.tab; store.set("tab", tab); render(); window.scrollTo(0, 0); });
+
+let startY = null;
+addEventListener("touchstart", e => { startY = scrollY === 0 ? e.touches[0].clientY : null; }, { passive: true });
+addEventListener("touchend", e => { if (startY != null && e.changedTouches[0].clientY - startY > 90 && cfg.token) { toast("Refreshing…", 1200); load(); } startY = null; }, { passive: true });
+document.addEventListener("visibilitychange", () => { if (!document.hidden && cfg.token) load(); });
+
+const cached = store.get("cache"); if (cached) { try { data = JSON.parse(cached); } catch {} }
+render();
+if (cfg.token) load();
+</script>
+</body>
+</html>
