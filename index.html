@@ -133,7 +133,7 @@ const ago = iso => { const m = Math.round((Date.now() - new Date(iso)) / 60000);
 function toast(msg, ms = 3200) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
 
 async function gh(path, opts = {}) {
-  const r = await fetch(`https://api.github.com/repos/${cfg.repo}/${path}`, {
+  const r = await fetch(`https://api.github.com/repos/${cfg.repo}` + (path ? `/${path}` : ""), {
     ...opts,
     headers: { Authorization: `Bearer ${cfg.token}`, Accept: opts.raw ? "application/vnd.github.raw+json" : "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers || {}) },
     cache: "no-store",
@@ -364,9 +364,18 @@ function viewSetup() {
     <p class="note">Make it at github.com → Settings → Developer settings → Fine-grained tokens. Only select the trading-bot repo; permissions: <b>Contents: Read</b>, <b>Actions: Read and write</b>.</p>`;
 }
 window.saveSetup = async () => {
-  cfg = { token: $("#tok").value.trim(), repo: $("#repo").value.trim() };
+  const repo = $("#repo").value.trim().replace(/^https?:\/\/(www\.)?github\.com\//i, "").replace(/\.git$/i, "").replace(/\/+$/, "");
+  const token = $("#tok").value.replace(/\s+/g, "");
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return toast("Repo should look like elijahvickers-17/trading-bot");
+  if (!token) return toast("Paste your GitHub token first");
+  cfg = { token, repo };
   try { await gh(""); store.set("gh_token", cfg.token); store.set("gh_repo", cfg.repo); toast("Connected"); load(); }
-  catch (e) { toast("That token can't open the repo: " + e.message, 6000); }
+  catch (e) {
+    const m = /^401/.test(e.message) ? "GitHub didn't accept that token. Copy it again and paste the whole thing."
+      : /^(403|404)/.test(e.message) ? "That token can't see the trading-bot repo. Make sure the token has it selected."
+      : "Couldn't reach GitHub: " + e.message;
+    toast(m, 7000);
+  }
 };
 
 const views = { home: viewHome, positions: viewPositions, decisions: viewDecisions, odds: viewOdds, goals: viewGoals, control: viewControl };
