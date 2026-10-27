@@ -122,6 +122,7 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
 let cfg = { token: store.get("gh_token"), repo: store.get("gh_repo", "elijahvickers-17/trading-bot") };
+let live = null, pollTimer = null;
 let data = null, paused = false, runs = [], tab = store.get("tab", "home"), oddsCache = {};
 
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -146,12 +147,14 @@ async function gh(path, opts = {}) {
 
 async function load() {
   try {
-    const [status, stop, rr] = await Promise.all([
+    const [status, stop, rr, lv] = await Promise.all([
       gh("contents/journal/status.json", { raw: true, allow404: true }),
       gh("contents/STOP", { allow404: true }),
       gh("actions/runs?per_page=8", {}).catch(() => ({ workflow_runs: [] })),
+      gh("contents/journal/live.json", { raw: true, allow404: true }).catch(() => null),
     ]);
     data = status ? JSON.parse(status) : null;
+    try { live = lv ? JSON.parse(lv) : null; } catch { live = null; }
     paused = !!stop;
     runs = rr.workflow_runs || [];
     store.set("cache", status || "");
@@ -160,6 +163,9 @@ async function load() {
     toast("Couldn't refresh: " + e.message);
   }
   render();
+  // While anything is running, refresh every 15 seconds so progress moves on its own.
+  clearTimeout(pollTimer);
+  if (runs.some(r => r.status !== "completed") && cfg.token) pollTimer = setTimeout(() => { if (!document.hidden) load(); }, 15000);
 }
 
 function header() {
@@ -181,9 +187,43 @@ function equityChart(points, w = 520, h = 120) {
     <div class="row note"><span>${usd(lo, 0)} low</span><span>${usd(hi, 0)} high</span></div>`;
 }
 
+const mins = iso => Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
+const ICON = { waiting: "○", analyzing: "●", done: "●", failed: "✕" };
+
+function planList(plan) {
+  return (plan || []).map(p => `<div class="row" style="font-size:13.5px;padding:5px 0;border-top:1px solid var(--rule)">
+      <span><b style="color:${p.status === "done" ? "var(--up)" : p.status === "failed" ? "var(--down)" : p.status === "analyzing" ? "var(--accent)" : "var(--ink3)"}">${ICON[p.status] || "○"}</b> ${esc(p.ticker)}</span>
+      <span class="muted" style="text-align:right;max-width:70%">${p.status === "analyzing" ? "working…" : esc(p.result || p.status)}</span></div>`).join("");
+}
+
 function running() {
   const r = runs.find(r => r.status !== "completed");
-  return r ? `<div class="card row"><span><span class="tag">Running</span> ${esc(r.name)}</span><span class="muted">${ago(r.run_started_at || r.created_at)}</span></div>` : "";
+  if (!r) return "";
+  const started = r.run_started_at || r.created_at;
+  if (r.name !== "Daily analysis")
+    return `<div class="card row"><span><span class="tag">Running</span> ${esc(r.name)}</span><span class="muted">${ago(started)}</span></div>`;
+  const mine = live && String(live.run_id) === String(r.id) && !live.done;
+  if (!mine) return `<div class="card"><div class="row"><span><span class="tag">Running</span> Daily analysis</span><span class="muted">${mins(started)} min</span></div>
+      <p style="margin:10px 0 0">${r.status === "queued" ? "Waiting for a GitHub server…" : "Starting up: installing the AI tools (about 1–2 minutes)…"}</p>
+      <p class="note">Updates every 15 seconds.</p></div>`;
+  const doneN = (live.plan || []).filter(p => p.status === "done" || p.status === "failed").length;
+  const total = (live.plan || []).length;
+  const pct = total ? Math.round(100 * doneN / total) : 5;
+  const stale = mins(live.updated) >= 6;
+  return `<div class="card"><div class="row"><span><span class="tag">Running</span> Daily analysis</span><span class="muted">${mins(started)} min</span></div>
+    <div style="font:600 17px var(--sans);margin-top:10px">${esc(live.stage)}</div>
+    ${live.detail ? `<div class="muted" style="font-size:14px;margin-top:2px">${esc(live.detail)}</div>` : ""}
+    ${total ? `<div class="bar" style="margin:12px 0 4px"><i style="width:${pct}%;background:var(--accent)"></i></div><div class="note" style="margin-top:0">${doneN} of ${total} reviewed · each takes a few minutes</div>` : ""}
+    ${planList(live.plan)}
+    <p class="note">Last update ${ago(live.updated)}${stale ? " — slow step (the AI may be busy and retrying); it's still running" : ""}. Refreshes every 15 seconds.</p></div>`;
+}
+
+function lastRun() {
+  if (!live || !live.done || runs.some(r => r.status !== "completed" && r.name === "Daily analysis")) return "";
+  return `<details class="card"><summary class="row" style="cursor:pointer;list-style:none"><span><span class="label">Last daily run</span><br><b>${live.ok ? "Finished" : "Stopped"}</b> · ${ago(live.updated)}</span><span class="muted">${esc(live.detail || "")}</span></summary>
+    ${planList(live.plan)}
+    <div class="label" style="margin-top:12px">Step by step</div>
+    ${(live.steps || []).map(s => `<div style="font-size:13px;padding:3px 0"><span class="muted num">${esc((s.time || "").slice(11, 16))}</span> ${esc(s.text)}</div>`).join("")}</details>`;
 }
 
 function viewHome() {
@@ -248,6 +288,7 @@ function viewDecisions() {
       <p class="note">${sc.method === "scores" ? "Picked by screen score (AI pick unavailable)." : "Picked by the AI research lead"} from ${(sc.shortlist || []).length} shortlisted of the S&amp;P 500 + crypto · ${esc(sc.date || "")}.</p></div>` : "";
   return `<div class="hero"><div class="label">Agent team</div><div style="font:600 22px var(--sans)">Scout → analysts → bull vs bear → trader → risk team</div>
     <p class="note">The scout picks what fits your goal; the team analyzes it with 30 days of news. Tap a decision for the full reasoning.</p></div>
+  ${running()}${lastRun()}
   ${scoutCard}
   <div class="card list">${ds.map((d, i) => `<div class="item" onclick="openReport(${i})">
      <div class="row"><span class="tk">${esc(d.ticker)}</span><span class="rating ${esc((d.rating || "").toLowerCase())}">${esc(d.rating)}</span></div>
