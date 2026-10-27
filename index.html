@@ -69,9 +69,9 @@ header{display:flex;align-items:center;justify-content:space-between;padding:10p
 .btn.ghost{background:var(--card);color:var(--ink);border:1px solid var(--rule)}
 .btn.danger{background:var(--down);color:#fff}
 .btn:disabled{opacity:.5}
-input,select{width:100%;font:15px var(--sans);padding:12px;border-radius:10px;border:1px solid var(--rule);background:var(--card);color:var(--ink);margin:6px 0 12px}
+input,select,textarea{width:100%;font:15px var(--sans);padding:12px;border-radius:10px;border:1px solid var(--rule);background:var(--card);color:var(--ink);margin:6px 0 12px}
 nav{position:fixed;left:0;right:0;bottom:0;background:color-mix(in srgb,var(--paper) 88%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:1px solid var(--rule);padding:6px 8px calc(6px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;z-index:5}
-nav button{flex:1;background:none;border:0;color:var(--ink3);font:500 10.5px var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:6px 0;display:flex;flex-direction:column;align-items:center;gap:3px}
+nav button{flex:1;background:none;border:0;color:var(--ink3);font:500 10px var(--mono);letter-spacing:.02em;text-transform:uppercase;padding:6px 0;display:flex;flex-direction:column;align-items:center;gap:3px}
 nav button.on{color:var(--accent)}
 nav svg{width:22px;height:22px}
 .sheet{position:fixed;inset:0;background:var(--paper);z-index:10;overflow-y:auto;padding:env(safe-area-inset-top) 0 40px;display:none}
@@ -85,6 +85,11 @@ nav svg{width:22px;height:22px}
 .note{font-size:12.5px;color:var(--ink3);margin-top:10px}
 a{color:var(--accent)}
 .hide{display:none}
+textarea{min-height:120px;resize:vertical;line-height:1.45}
+.opt{display:block;width:100%;text-align:left;background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:12px 14px;margin:8px 0;color:var(--ink);font:inherit}
+.opt.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.opt b{display:block;font-size:15.5px;margin-bottom:2px}
+.opt span{color:var(--ink2);font-size:13.5px}
 </style>
 </head>
 <body>
@@ -101,6 +106,7 @@ a{color:var(--accent)}
   <button data-tab="positions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 4v16"/></svg>Holdings</button>
   <button data-tab="decisions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="9" r="5"/><circle cx="16" cy="15" r="5"/></svg>Agents</button>
   <button data-tab="odds"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Odds</button>
+  <button data-tab="goals"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2" fill="currentColor"/></svg>Goals</button>
   <button data-tab="control"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v9"/><path d="M6.3 7a8 8 0 1 0 11.4 0"/></svg>Control</button>
 </nav>
 
@@ -190,6 +196,7 @@ function viewHome() {
     <div class="label">Bot equity · since ${new Date(data.started).toLocaleDateString()}</div>
     <div class="big">${usd(data.equity)}</div>
     <div class="delta ${sign(data.return)}">${pct(data.return)} · ${usd(data.equity - data.capital)}</div>
+    ${data.goals ? `<div style="margin-top:10px"><span class="chip" onclick="go('goals')">Goal: ${esc(data.goals.label)} · ${usd(data.capital, 0)} budget</span></div>` : ""}
   </div>
   <div class="card">${equityChart(data.equity_curve)}</div>
   <div class="label" style="margin:16px 0 8px">Versus just holding</div>
@@ -288,6 +295,30 @@ async function loadOdds(t) {
   if (tab === "odds") render();
 }
 
+let draft = null;
+function viewGoals() {
+  if (!data?.profiles) return `<div class="empty">Goals appear after the bot's first run.</div>`;
+  const g = data.goals || {};
+  draft = draft || { profile: g.profile || "growth", budget: g.budget ?? "", notes: g.notes || "" };
+  return `<div class="hero"><div class="label">Your goals</div><div style="font:600 22px var(--sans)">Tell the bot what you're investing for</div>
+    <p class="note">Your strategy sets the hard risk rules. Your own words go to the AI agents with every analysis, so their calls fit your situation. Change it any time.</p></div>
+  <div class="label" style="margin-top:6px">Strategy</div>
+  ${Object.entries(data.profiles).map(([k, p]) => `<button class="opt ${draft.profile === k ? "on" : ""}" onclick="draft.profile='${k}';render()"><b>${esc(p.label)}</b><span>${esc(p.summary)}</span></button>`).join("")}
+  <div class="label" style="margin-top:16px">Budget for the bot</div>
+  <input id="gBudget" inputmode="decimal" placeholder="${usd(data.capital, 0)} (current)" value="${esc(draft.budget)}" oninput="draft.budget=this.value">
+  <div class="label">In your own words</div>
+  <textarea id="gNotes" maxlength="1500" placeholder="e.g. I'm a student putting in a small amount to learn and grow it fast. I can handle swings but don't want to lose more than half. Later I'll switch to long-term holding." oninput="draft.notes=this.value">${esc(draft.notes)}</textarea>
+  <p class="note" style="margin-top:-4px">Don't include account numbers or passwords; this text is sent to the AI.</p>
+  <button class="btn" onclick="saveGoals()">Save goals</button>
+  ${g.updated ? `<p class="note">Current: ${esc(g.label)}${g.budget ? ` · ${usd(g.budget, 0)}` : ""} · saved ${ago(g.updated)}</p>` : ""}
+  <p class="note">Changing the budget resets what "return" is measured against.</p>`;
+}
+window.saveGoals = () => {
+  const goals = { profile: draft.profile, budget: String(draft.budget).replace(/[$,\s]/g, "") || null, notes: draft.notes.trim() };
+  if (goals.budget && !(+goals.budget >= 50)) return toast("Budget must be at least $50");
+  dispatch("control.yml", { action: "goals", goals: JSON.stringify(goals) }, "Saving your goals — they apply from the next run");
+};
+
 function viewControl() {
   const tickers = data ? [...data.watchlist.stocks, ...data.watchlist.crypto] : [];
   return `<div class="hero"><div class="label">Control</div><div style="font:600 22px var(--sans)">${paused ? "The bot is paused" : data?.halted ? "Halted by the drawdown limit" : "The bot is running"}</div>
@@ -338,7 +369,8 @@ window.saveSetup = async () => {
   catch (e) { toast("That token can't open the repo: " + e.message, 6000); }
 };
 
-const views = { home: viewHome, positions: viewPositions, decisions: viewDecisions, odds: viewOdds, control: viewControl };
+const views = { home: viewHome, positions: viewPositions, decisions: viewDecisions, odds: viewOdds, goals: viewGoals, control: viewControl };
+window.go = t => { tab = t; store.set("tab", t); render(); window.scrollTo(0, 0); };
 function render() {
   header();
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
