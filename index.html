@@ -244,7 +244,10 @@ function viewHome() {
   <div class="label" style="margin:16px 0 8px">Versus just holding</div>
   <div class="grid">
     ${beat.map(([k, r]) => `<div class="stat"><div class="label">${esc(k)}</div><div class="v ${sign(r)}">${pct(r)}</div>
-      <div class="s">${data.return > r ? "Bot is ahead" : "Bot is behind"} by ${prob(Math.abs(data.return - r), 2)}</div></div>`).join("")}
+      <div class="s">${Math.abs(data.return - r) < 0.0005 ? "Bot is even with it" : (data.return > r ? "Bot is ahead" : "Bot is behind") + " by " + prob(Math.abs(data.return - r), 2)}</div></div>`).join("")}
+  </div>
+  ${!(data.positions || []).length && !data.stats.closed_trades ? `<p class="note">The bot hasn't bought anything yet, so it's all cash at 0%. Any "ahead" or "behind" here is just the market moving, not the bot's skill.</p>` : ""}
+  <div style="display:none">
   </div>
   <div class="label" style="margin:16px 0 8px">Scorecard</div>
   <div class="grid">
