@@ -197,6 +197,8 @@ function viewHome() {
     <div class="big">${usd(data.equity)}</div>
     <div class="delta ${sign(data.return)}">${pct(data.return)} · ${usd(data.equity - data.capital)}</div>
     ${data.goals ? `<div style="margin-top:10px"><span class="chip" onclick="go('goals')">Goal: ${esc(data.goals.label)} · ${usd(data.capital, 0)} budget</span></div>` : ""}
+    ${data.scout?.regimes?.stocks ? `<div class="chips">${["stocks", "crypto"].map(k => { const r = data.scout.regimes[k]; if (!r) return ""; const c = r.state === "risk_on" ? "var(--up)" : r.state === "risk_off" ? "var(--down)" : "var(--warn)";
+      return `<span class="chip" style="border-color:${c}" title="${esc(r.why)}"><b style="color:${c}">●</b> ${k === "stocks" ? "Stocks" : "Crypto"}: ${esc(r.state.replace("_", " "))}</span>`; }).join("")}</div>` : ""}
   </div>
   <div class="card">${equityChart(data.equity_curve)}</div>
   <div class="label" style="margin:16px 0 8px">Versus just holding</div>
@@ -238,8 +240,15 @@ function viewPositions() {
 function viewDecisions() {
   if (!data) return `<div class="empty">Nothing yet.</div>`;
   const ds = data.decisions || [];
-  return `<div class="hero"><div class="label">Agent team</div><div style="font:600 22px var(--sans)">Analysts → bull vs bear → trader → risk team</div>
-    <p class="note">Tap a decision for the full reasoning.</p></div>
+  const sc = data.scout;
+  const scoutCard = sc ? `<div class="card"><div class="row"><span class="label">Today's research</span><span class="pill">${esc(sc.screen || "")}</span></div>
+      ${sc.error ? `<p class="note">Scout failed: ${esc(sc.error)}. Holdings were still reviewed.</p>` : ""}
+      ${(sc.picks || []).map(p => `<div style="margin-top:10px"><span class="tk">${esc(p.ticker)}</span><div class="muted" style="font-size:13.5px">${esc(p.why)}</div></div>`).join("") || `<p class="note">No new candidates today.</p>`}
+      ${sc.market_note ? `<p class="note">${esc(sc.market_note)}</p>` : ""}
+      <p class="note">${sc.method === "scores" ? "Picked by screen score (AI pick unavailable)." : "Picked by the AI research lead"} from ${(sc.shortlist || []).length} shortlisted of the S&amp;P 500 + crypto · ${esc(sc.date || "")}.</p></div>` : "";
+  return `<div class="hero"><div class="label">Agent team</div><div style="font:600 22px var(--sans)">Scout → analysts → bull vs bear → trader → risk team</div>
+    <p class="note">The scout picks what fits your goal; the team analyzes it with 30 days of news. Tap a decision for the full reasoning.</p></div>
+  ${scoutCard}
   <div class="card list">${ds.map((d, i) => `<div class="item" onclick="openReport(${i})">
      <div class="row"><span class="tk">${esc(d.ticker)}</span><span class="rating ${esc((d.rating || "").toLowerCase())}">${esc(d.rating)}</span></div>
      <div class="row" style="font-size:13px;margin-top:4px"><span>${d.action === "none" ? `<span class="muted">${esc(d.detail || "no trade")}</span>` : `<b>${esc(d.action)}</b>`}</span></div>
