@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; connect-src https://api.github.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -14,8 +16,6 @@
 <title>Desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter+Tight:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <style>
 :root{
   --paper:#f3efe6;--card:#fbf9f4;--ink:#1c1a15;--ink2:#5e584c;--ink3:#948d7f;--rule:#e0d9cb;
@@ -90,6 +90,19 @@ textarea{min-height:120px;resize:vertical;line-height:1.45}
 .opt.on{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
 .opt b{display:block;font-size:15.5px;margin-bottom:2px}
 .opt span{color:var(--ink2);font-size:13.5px}
+.warnbox{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,var(--card));font-size:14px}
+.status.liquidating,.status.halted,.status.error{border-color:var(--down)}
+.status.paused,.status.cautious{border-color:var(--warn)}
+.warn{color:var(--warn)}
+.steps{display:flex;gap:6px;margin-top:10px}
+.steps span{flex:1;text-align:center;font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.06em;padding:6px 0;border-radius:6px;background:var(--chip);color:var(--ink3)}
+.steps span.on{background:var(--ink);color:var(--paper)}
+.steps span.now{background:var(--accent);color:var(--accent-ink)}
+.rowbtn,.spark{display:block;width:100%;text-align:left;font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+.spark{background:var(--card);border:1px solid var(--rule)}
+.list>.rowbtn{border-top:1px solid var(--rule)}.list>.rowbtn:first-child{border-top:0}
+.planrow{font-size:13.5px;padding:5px 0;border-top:1px solid var(--rule)}
+button.chip{cursor:pointer}
 </style>
 </head>
 <body>
@@ -113,342 +126,9 @@ textarea{min-height:120px;resize:vertical;line-height:1.45}
 <div id="sheet" class="sheet"><div class="wrap" id="sheetBody"></div></div>
 <div id="toast" class="toast"></div>
 
-<script>
-"use strict";
-const $ = s => document.querySelector(s);
-const store = {
-  get(k, d = "") { try { return localStorage.getItem(k) ?? d; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
-  del(k) { try { localStorage.removeItem(k); } catch {} },
-};
-let cfg = { token: store.get("gh_token"), repo: store.get("gh_repo", "elijahvickers-17/trading-bot") };
-let live = null, pollTimer = null;
-let data = null, paused = false, runs = [], tab = store.get("tab", "home"), oddsCache = {};
-
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const usd = (n, d = 2) => n == null ? "—" : (n < 0 ? "-" : "") + "$" + Math.abs(n).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
-const pct = (n, d = 2) => n == null ? "—" : (n > 0 ? "+" : "") + (n * 100).toFixed(d) + "%";
-const prob = (n, d = 0) => n == null ? "—" : (n * 100).toFixed(d) + "%";
-const sign = n => n > 0 ? "up" : n < 0 ? "down" : "";
-const ago = iso => { const m = Math.round((Date.now() - new Date(iso)) / 60000); return m < 1 ? "just now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago"; };
-function toast(msg, ms = 3200) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
-
-async function gh(path, opts = {}) {
-  const r = await fetch(`https://api.github.com/repos/${cfg.repo}` + (path ? `/${path}` : ""), {
-    ...opts,
-    headers: { Authorization: `Bearer ${cfg.token}`, Accept: opts.raw ? "application/vnd.github.raw+json" : "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", ...(opts.headers || {}) },
-    cache: "no-store",
-  });
-  if (r.status === 404 && opts.allow404) return null;
-  if (!r.ok) throw new Error(`${r.status} ${(await r.text()).slice(0, 140)}`);
-  if (r.status === 204) return true;
-  return opts.raw ? r.text() : r.json();
-}
-
-async function load() {
-  try {
-    const [status, stop, rr, lv] = await Promise.all([
-      gh("contents/journal/status.json", { raw: true, allow404: true }),
-      gh("contents/STOP", { allow404: true }),
-      gh("actions/runs?per_page=8", {}).catch(() => ({ workflow_runs: [] })),
-      gh("contents/journal/live.json", { raw: true, allow404: true }).catch(() => null),
-    ]);
-    data = status ? JSON.parse(status) : null;
-    try { live = lv ? JSON.parse(lv) : null; } catch { live = null; }
-    paused = !!stop;
-    runs = rr.workflow_runs || [];
-    store.set("cache", status || "");
-  } catch (e) {
-    const c = store.get("cache"); if (c) data = JSON.parse(c);
-    toast("Couldn't refresh: " + e.message);
-  }
-  render();
-  // While anything is running, refresh every 15 seconds so progress moves on its own.
-  clearTimeout(pollTimer);
-  if (runs.some(r => r.status !== "completed") && cfg.token) pollTimer = setTimeout(() => { if (!document.hidden) load(); }, 15000);
-}
-
-function header() {
-  const m = $("#mode");
-  if (!data) { m.textContent = "No data yet"; m.className = "pill"; return; }
-  if (paused || data.stopped) { m.textContent = "Paused"; m.className = "pill warn"; }
-  else if (data.halted) { m.textContent = "Halted"; m.className = "pill warn"; }
-  else { m.textContent = data.mode === "live" ? "Live money" : "Paper"; m.className = "pill" + (data.mode === "live" ? " live" : ""); }
-}
-
-function equityChart(points, w = 520, h = 120) {
-  if (!points || points.length < 2) return `<div class="empty">The chart fills in after a few runs.</div>`;
-  const v = points.map(p => p[1]), lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
-  const xy = v.map((y, i) => [i * w / (v.length - 1), h - 6 - (y - lo) / span * (h - 12)]);
-  const line = xy.map((p, i) => (i ? "L" : "M") + p[0].toFixed(1) + " " + p[1].toFixed(1)).join("");
-  const col = v[v.length - 1] >= v[0] ? "var(--up)" : "var(--down)";
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" role="img" aria-label="Equity over time">
-    <path d="${line} L${w} ${h} L0 ${h}Z" fill="${col}" opacity=".08"/><path d="${line}" fill="none" stroke="${col}" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>
-    <div class="row note"><span>${usd(lo, 0)} low</span><span>${usd(hi, 0)} high</span></div>`;
-}
-
-const mins = iso => Math.max(0, Math.round((Date.now() - new Date(iso)) / 60000));
-const ICON = { waiting: "○", analyzing: "●", done: "●", failed: "✕" };
-
-function planList(plan) {
-  return (plan || []).map(p => `<div class="row" style="font-size:13.5px;padding:5px 0;border-top:1px solid var(--rule)">
-      <span><b style="color:${p.status === "done" ? "var(--up)" : p.status === "failed" ? "var(--down)" : p.status === "analyzing" ? "var(--accent)" : "var(--ink3)"}">${ICON[p.status] || "○"}</b> ${esc(p.ticker)}</span>
-      <span class="muted" style="text-align:right;max-width:70%">${p.status === "analyzing" ? "working…" : esc(p.result || p.status)}</span></div>`).join("");
-}
-
-function running() {
-  const r = runs.find(r => r.status !== "completed");
-  if (!r) return "";
-  const started = r.run_started_at || r.created_at;
-  if (r.name !== "Daily analysis")
-    return `<div class="card row"><span><span class="tag">Running</span> ${esc(r.name)}</span><span class="muted">${ago(started)}</span></div>`;
-  const mine = live && String(live.run_id) === String(r.id) && !live.done;
-  if (!mine) return `<div class="card"><div class="row"><span><span class="tag">Running</span> Daily analysis</span><span class="muted">${mins(started)} min</span></div>
-      <p style="margin:10px 0 0">${r.status === "queued" ? "Waiting for a GitHub server…" : "Starting up: installing the AI tools (about 1–2 minutes)…"}</p>
-      <p class="note">Updates every 15 seconds.</p></div>`;
-  const doneN = (live.plan || []).filter(p => p.status === "done" || p.status === "failed").length;
-  const total = (live.plan || []).length;
-  const pct = total ? Math.round(100 * doneN / total) : 5;
-  const stale = mins(live.updated) >= 6;
-  return `<div class="card"><div class="row"><span><span class="tag">Running</span> Daily analysis</span><span class="muted">${mins(started)} min</span></div>
-    <div style="font:600 17px var(--sans);margin-top:10px">${esc(live.stage)}</div>
-    ${live.detail ? `<div class="muted" style="font-size:14px;margin-top:2px">${esc(live.detail)}</div>` : ""}
-    ${total ? `<div class="bar" style="margin:12px 0 4px"><i style="width:${pct}%;background:var(--accent)"></i></div><div class="note" style="margin-top:0">${doneN} of ${total} reviewed · each takes a few minutes</div>` : ""}
-    ${planList(live.plan)}
-    <p class="note">Last update ${ago(live.updated)}${stale ? " — slow step (the AI may be busy and retrying); it's still running" : ""}. Refreshes every 15 seconds.</p></div>`;
-}
-
-function lastRun() {
-  if (!live || !live.done || runs.some(r => r.status !== "completed" && r.name === "Daily analysis")) return "";
-  return `<details class="card"><summary class="row" style="cursor:pointer;list-style:none"><span><span class="label">Last daily run</span><br><b>${live.ok ? "Finished" : "Stopped"}</b> · ${ago(live.updated)}</span><span class="muted">${esc(live.detail || "")}</span></summary>
-    ${planList(live.plan)}
-    <div class="label" style="margin-top:12px">Step by step</div>
-    ${(live.steps || []).map(s => `<div style="font-size:13px;padding:3px 0"><span class="muted num">${esc((s.time || "").slice(11, 16))}</span> ${esc(s.text)}</div>`).join("")}</details>`;
-}
-
-function viewHome() {
-  if (!data) return `${running()}<div class="card empty">No results yet. The first run writes them — or press <b>Run analysis now</b> in Control.</div>`;
-  const s = data.stats, b = Object.entries(data.benchmarks || {});
-  const beat = b.filter(([, r]) => r != null);
-  return `
-  ${running()}
-  <div class="hero">
-    <div class="label">Bot equity · since ${new Date(data.started).toLocaleDateString()}</div>
-    <div class="big">${usd(data.equity)}</div>
-    <div class="delta ${sign(data.return)}">${pct(data.return)} · ${usd(data.equity - data.capital)}</div>
-    ${data.goals ? `<div style="margin-top:10px"><span class="chip" onclick="go('goals')">Goal: ${esc(data.goals.label)} · ${usd(data.capital, 0)} budget</span></div>` : ""}
-    ${data.scout?.regimes?.stocks ? `<div class="chips">${["stocks", "crypto"].map(k => { const r = data.scout.regimes[k]; if (!r) return ""; const c = r.state === "risk_on" ? "var(--up)" : r.state === "risk_off" ? "var(--down)" : "var(--warn)";
-      return `<span class="chip" style="border-color:${c}" title="${esc(r.why)}"><b style="color:${c}">●</b> ${k === "stocks" ? "Stocks" : "Crypto"}: ${esc(r.state.replace("_", " "))}</span>`; }).join("")}</div>` : ""}
-  </div>
-  <div class="card">${equityChart(data.equity_curve)}</div>
-  <div class="label" style="margin:16px 0 8px">Versus just holding</div>
-  <div class="grid">
-    ${beat.map(([k, r]) => `<div class="stat"><div class="label">${esc(k)}</div><div class="v ${sign(r)}">${pct(r)}</div>
-      <div class="s">${Math.abs(data.return - r) < 0.0005 ? "Bot is even with it" : (data.return > r ? "Bot is ahead" : "Bot is behind") + " by " + prob(Math.abs(data.return - r), 2)}</div></div>`).join("")}
-  </div>
-  ${!(data.positions || []).length && !data.stats.closed_trades ? `<p class="note">The bot hasn't bought anything yet, so it's all cash at 0%. Any "ahead" or "behind" here is just the market moving, not the bot's skill.</p>` : ""}
-  <div style="display:none">
-  </div>
-  <div class="label" style="margin:16px 0 8px">Scorecard</div>
-  <div class="grid">
-    <div class="stat"><div class="label">Win rate</div><div class="v">${s.win_rate == null ? "—" : Math.round(s.win_rate * 100) + "%"}</div><div class="s">${s.closed_trades} closed trade${s.closed_trades === 1 ? "" : "s"}</div></div>
-    <div class="stat"><div class="label">Profit factor</div><div class="v">${s.profit_factor == null ? "—" : s.profit_factor.toFixed(2)}</div><div class="s">wins ÷ losses ($)</div></div>
-    <div class="stat"><div class="label">Avg win / loss</div><div class="v" style="font-size:17px">${usd(s.avg_win, 0)} / ${usd(s.avg_loss, 0)}</div><div class="s">per closed trade</div></div>
-    <div class="stat"><div class="label">Worst drop</div><div class="v down">${pct(-s.max_drawdown)}</div><div class="s">peak to trough</div></div>
-  </div>
-  <p class="note">Updated ${ago(data.updated)}. ${s.closed_trades < 20 ? "Under 20 closed trades: too few to judge the win rate yet." : ""}</p>`;
-}
-
-function viewPositions() {
-  if (!data) return `<div class="empty">Nothing yet.</div>`;
-  const ps = data.positions || [];
-  const invested = ps.reduce((a, p) => a + p.value, 0);
-  return `
-  <div class="hero"><div class="label">Invested</div><div class="big">${usd(invested, 0)}</div>
-    <div class="delta muted">${usd(data.equity - invested, 0)} in cash · ${ps.length} position${ps.length === 1 ? "" : "s"}</div></div>
-  <div class="card list">${ps.length ? ps.map(p => {
-    const toStop = 1 - p.stop / p.price;
-    return `<div class="item">
-      <div class="row"><span class="tk">${esc(p.ticker)}</span><span class="num ${sign(p.pnl)}">${usd(p.pnl)} · ${pct(p.pnl_pct)}</span></div>
-      <div class="row muted num" style="font-size:12.5px;margin-top:3px"><span>${(+p.qty).toLocaleString(undefined, { maximumFractionDigits: 6 })} @ ${usd(p.entry)}</span><span>now ${usd(p.price)}</span></div>
-      <div class="row" style="margin-top:8px;font-size:12.5px"><span class="muted">Stop ${usd(p.stop)} · ${prob(toStop, 1)} below</span><span class="muted">${p.tp_taken ? "½ profit taken · " : ""}since ${esc(p.since || "—")}</span></div>
-    </div>`;
-  }).join("") : `<div class="empty">No open positions.</div>`}</div>
-  <div class="label" style="margin:18px 0 8px">Recent trades</div>
-  <div class="card list">${(data.trades || []).slice(0, 30).map(t => `<div class="item">
-     <div class="row"><span><b>${esc(t.side).toUpperCase()}</b> ${esc(t.ticker)}</span><span class="num ${sign(t.realized_pnl)}">${t.realized_pnl != null ? usd(t.realized_pnl) : t.price ? usd(t.price) : ""}</span></div>
-     <div class="row muted" style="font-size:12.5px"><span>${esc(t.reason)}</span><span>${esc((t.time || "").slice(5, 16))}</span></div></div>`).join("") || `<div class="empty">No trades yet.</div>`}</div>`;
-}
-
-function viewDecisions() {
-  if (!data) return `<div class="empty">Nothing yet.</div>`;
-  const ds = data.decisions || [];
-  const sc = data.scout;
-  const scoutCard = sc ? `<div class="card"><div class="row"><span class="label">Today's research</span><span class="pill">${esc(sc.screen || "")}</span></div>
-      ${sc.error ? `<p class="note">Scout failed: ${esc(sc.error)}. Holdings were still reviewed.</p>` : ""}
-      ${(sc.picks || []).map(p => `<div style="margin-top:10px"><span class="tk">${esc(p.ticker)}</span><div class="muted" style="font-size:13.5px">${esc(p.why)}</div></div>`).join("") || `<p class="note">No new candidates today.</p>`}
-      ${sc.market_note ? `<p class="note">${esc(sc.market_note)}</p>` : ""}
-      <p class="note">${sc.method === "scores" ? "Picked by screen score (AI pick unavailable)." : "Picked by the AI research lead"} from ${(sc.shortlist || []).length} shortlisted of the S&amp;P 500 + crypto · ${esc(sc.date || "")}.</p></div>` : "";
-  return `<div class="hero"><div class="label">Agent team</div><div style="font:600 22px var(--sans)">Scout → analysts → bull vs bear → trader → risk team</div>
-    <p class="note">The scout picks what fits your goal; the team analyzes it with 30 days of news. Tap a decision for the full reasoning.</p></div>
-  ${running()}${lastRun()}
-  ${scoutCard}
-  <div class="card list">${ds.map((d, i) => `<div class="item" onclick="openReport(${i})">
-     <div class="row"><span class="tk">${esc(d.ticker)}</span><span class="rating ${esc((d.rating || "").toLowerCase())}">${esc(d.rating)}</span></div>
-     <div class="row" style="font-size:13px;margin-top:4px"><span>${d.action === "none" ? `<span class="muted">${esc(d.detail || "no trade")}</span>` : `<b>${esc(d.action)}</b>`}</span></div>
-     ${d.tm_verdict ? `<div style="font-size:12.5px;margin-top:4px" class="muted">Time Machine: ${esc(d.tm_verdict)}</div>` : ""}
-     <div class="muted" style="font-size:12px;margin-top:4px">${esc((d.time || "").slice(0, 16))}${d.minutes ? ` · ${d.minutes} min` : ""}</div></div>`).join("") || `<div class="empty">No decisions yet.</div>`}</div>`;
-}
-
-async function openReport(i) {
-  const d = data.decisions[i];
-  const date = (d.time || "").slice(0, 10);
-  sheet(`<div class="label">${esc(date)}</div><h2 style="margin:6px 0">${esc(d.ticker)} · <span class="rating ${esc((d.rating || "").toLowerCase())}">${esc(d.rating)}</span></h2>
-    ${d.tm_summary ? `<div class="card" style="font-size:13.5px"><span class="tag">Time Machine</span><p style="margin:8px 0 0">${esc(d.tm_summary)}</p></div>` : ""}
-    <div id="rep" class="md"><p class="muted">Loading the agents' reasoning…</p></div>`);
-  if (!d.report) { $("#rep").innerHTML = `<p class="muted">${esc(d.detail || "No report saved.")}</p>`; return; }
-  try {
-    const md = await gh(`contents/reports/${encodeURIComponent(d.report)}`, { raw: true });
-    $("#rep").innerHTML = DOMPurify.sanitize(marked.parse(md));
-  } catch (e) { $("#rep").innerHTML = `<p class="muted">Couldn't load the report (${esc(e.message)}).</p>`; }
-}
-
-function oddsBars(o) {
-  if (!o) return "";
-  const seg = (v, c) => `<i style="width:${(v * 100).toFixed(1)}%;background:${c}"></i>`;
-  return `<div class="bar" style="margin:8px 0 6px">${seg(o.p_target, "var(--up)")}${seg(o.p_trail, "color-mix(in srgb,var(--up) 45%,var(--chip))")}${seg(o.p_open_at_end, "var(--ink3)")}${seg(o.p_stop, "var(--down)")}</div>
-  <div class="row num" style="font-size:12px;flex-wrap:wrap"><span class="up">target ${prob(o.p_target)}</span><span>trail ${prob(o.p_trail)}</span><span class="muted">still open ${prob(o.p_open_at_end)}</span><span class="down">stop ${prob(o.p_stop)}</span></div>
-  <div class="row num" style="font-size:12.5px;margin-top:6px"><span>profit in <b>${Math.round(o.p_profit * 100)}%</b></span><span>avg <b class="${sign(o.mean)}">${pct(o.mean)}</b></span><span class="muted">5–95%: ${pct(o.p5, 1)} … ${pct(o.p95, 1)}</span></div>`;
-}
-
-function viewOdds() {
-  const tickers = data ? [...data.watchlist.stocks, ...data.watchlist.crypto] : [];
-  const sel = store.get("odds_sel", tickers[0] || "");
-  const o = oddsCache[sel];
-  const verdictTag = v => `<span class="tag" style="background:${v === "favorable" ? "var(--up)" : v === "unfavorable" ? "var(--down)" : "var(--ink)"}">${esc(v)}</span>`;
-  setTimeout(() => sel && !oddsCache[sel] && loadOdds(sel), 0);
-  return `<div class="hero"><div class="label">Time Machine</div><div style="font:600 22px var(--sans)">Odds before any money goes in</div>
-     <p class="note">10,000 replays of each asset's own last year, plus every real day of the last two years, run through the bot's exact stop, take-profit and trailing rules, after costs.</p></div>
-   <div class="sparkgrid">${tickers.map(t => `<div class="spark ${t === sel ? "sel" : ""}" onclick="pickOdds('${esc(t)}')"><div class="label" style="color:var(--ink)">${esc(t.replace("-USD", ""))}</div>
-      <div class="muted" style="font-size:11.5px">${oddsCache[t]?.verdict ?? "tap"}</div></div>`).join("")}</div>
-   <div class="card" id="oddsCard">${!sel ? `<div class="empty">No watchlist yet.</div>` : !o ? `<div class="empty">Loading ${esc(sel)}…</div>` : o.missing ? `<div class="empty">No odds for ${esc(sel)} yet. They're computed when the agents want to buy it.</div>` : `
-     <div class="row"><span class="tk">${esc(sel)}</span>${verdictTag(o.verdict)}</div>
-     <div class="label" style="margin-top:14px">10,000 replays</div>${oddsBars(o.monte_carlo)}
-     ${o.history_similar ? `<div class="label" style="margin-top:16px">History · ${o.history_similar.days} days that looked like today</div>${oddsBars(o.history_similar)}` : ""}
-     ${o.history ? `<div class="label" style="margin-top:16px">History · all ${o.history.days} days</div>${oddsBars(o.history)}` : ""}
-     <p class="note">Rules tested: stop −${(o.rules.stop * 100).toFixed(0)}%, sell half at +${(o.rules.target * 100).toFixed(0)}%, trail ${(o.rules.trail * 100).toFixed(0)}% after +${(o.rules.trail_activate * 100).toFixed(0)}%, ${o.rules.horizon}-day horizon. A replay of the past, not a prediction.</p>`}
-   </div>`;
-}
-window.pickOdds = t => { store.set("odds_sel", t); render(); };
-async function loadOdds(t) {
-  try {
-    const raw = await gh(`contents/journal/timemachine/${encodeURIComponent(t)}.json`, { raw: true, allow404: true });
-    oddsCache[t] = raw ? JSON.parse(raw) : { missing: true };
-  } catch { oddsCache[t] = { missing: true }; }
-  if (tab === "odds") render();
-}
-
-let draft = null;
-function viewGoals() {
-  if (!data?.profiles) return `<div class="empty">Goals appear after the bot's first run.</div>`;
-  const g = data.goals || {};
-  draft = draft || { profile: g.profile || "growth", budget: g.budget ?? "", notes: g.notes || "" };
-  return `<div class="hero"><div class="label">Your goals</div><div style="font:600 22px var(--sans)">Tell the bot what you're investing for</div>
-    <p class="note">Your strategy sets the hard risk rules. Your own words go to the AI agents with every analysis, so their calls fit your situation. Change it any time.</p></div>
-  <div class="label" style="margin-top:6px">Strategy</div>
-  ${Object.entries(data.profiles).map(([k, p]) => `<button class="opt ${draft.profile === k ? "on" : ""}" onclick="draft.profile='${k}';render()"><b>${esc(p.label)}</b><span>${esc(p.summary)}</span></button>`).join("")}
-  <div class="label" style="margin-top:16px">Budget for the bot</div>
-  <input id="gBudget" inputmode="decimal" placeholder="${usd(data.capital, 0)} (current)" value="${esc(draft.budget)}" oninput="draft.budget=this.value">
-  <div class="label">In your own words</div>
-  <textarea id="gNotes" maxlength="1500" placeholder="e.g. I'm a student putting in a small amount to learn and grow it fast. I can handle swings but don't want to lose more than half. Later I'll switch to long-term holding." oninput="draft.notes=this.value">${esc(draft.notes)}</textarea>
-  <p class="note" style="margin-top:-4px">Don't include account numbers or passwords; this text is sent to the AI.</p>
-  <button class="btn" onclick="saveGoals()">Save goals</button>
-  ${g.updated ? `<p class="note">Current: ${esc(g.label)}${g.budget ? ` · ${usd(g.budget, 0)}` : ""} · saved ${ago(g.updated)}</p>` : ""}
-  <p class="note">Changing the budget resets what "return" is measured against.</p>`;
-}
-window.saveGoals = () => {
-  const goals = { profile: draft.profile, budget: String(draft.budget).replace(/[$,\s]/g, "") || null, notes: draft.notes.trim() };
-  if (goals.budget && !(+goals.budget >= 50)) return toast("Budget must be at least $50");
-  dispatch("control.yml", { action: "goals", goals: JSON.stringify(goals) }, "Saving your goals — they apply from the next run");
-};
-
-function viewControl() {
-  const tickers = data ? [...data.watchlist.stocks, ...data.watchlist.crypto] : [];
-  return `<div class="hero"><div class="label">Control</div><div style="font:600 22px var(--sans)">${paused ? "The bot is paused" : data?.halted ? "Halted by the drawdown limit" : "The bot is running"}</div>
-    <p class="note">Buttons start a run on GitHub. It takes about a minute to start; you'll get a phone notification when it's done.</p></div>
-  ${running()}
-  <button class="btn" onclick="dispatch('daily.yml',{tickers:''},'Analysis started for the whole watchlist')">Run analysis now</button>
-  <select id="one">${tickers.map(t => `<option>${esc(t)}</option>`).join("")}</select>
-  <button class="btn ghost" onclick="dispatch('daily.yml',{tickers:$('#one').value},'Analysis started for '+$('#one').value)">Analyze just this one</button>
-  <button class="btn ghost" onclick="dispatch('monitor.yml',{},'Checking stops and prices')">Check stops &amp; refresh</button>
-  ${paused || data?.halted ? `<button class="btn" onclick="dispatch('control.yml',{action:'resume'},'Resuming')">Resume trading</button>`
-    : `<button class="btn ghost" onclick="dispatch('control.yml',{action:'pause'},'Pausing')">Pause trading</button>`}
-  <button class="btn danger" onclick="panic()">Sell everything &amp; pause</button>
-  <div class="card" style="margin-top:22px"><div class="label">Settings</div>
-    <div class="note">Repo: ${esc(cfg.repo)}<br>Token saved on this phone only.</div>
-    <button class="btn ghost" onclick="logout()">Change token</button>
-    <div class="note">Notifications: open the ntfy app and subscribe to your topic name (the NTFY_TOPIC secret).</div></div>`;
-}
-
-async function dispatch(file, inputs, msg) {
-  try {
-    await gh(`actions/workflows/${file}/dispatches`, { method: "POST", body: JSON.stringify({ ref: "main", inputs }) });
-    toast(msg + ". Refresh in a minute.");
-    setTimeout(load, 8000);
-  } catch (e) { toast("Didn't start: " + e.message, 6000); }
-}
-window.dispatch = dispatch;
-window.panic = () => sheet(`<h2>Sell everything?</h2><p>This closes every position the bot holds at market price and pauses it. Type <b>SELL</b> to confirm.</p>
-  <input id="confirm" autocomplete="off" autocapitalize="characters" placeholder="SELL">
-  <button class="btn danger" onclick="if($('#confirm').value.trim().toUpperCase()==='SELL'){closeSheet();dispatch('control.yml',{action:'panic'},'Selling everything')}else{toast('Type SELL to confirm')}">Sell everything</button>
-  <button class="btn ghost" onclick="closeSheet()">Cancel</button>`);
-window.logout = () => { store.del("gh_token"); cfg.token = ""; render(); };
-window.openReport = openReport;
-
-function sheet(html) { $("#sheetBody").innerHTML = `<div class="row" style="padding:10px 0"><span></span><button class="chip" onclick="closeSheet()">Close</button></div>` + html; $("#sheet").classList.add("open"); }
-window.closeSheet = () => $("#sheet").classList.remove("open");
-
-function viewSetup() {
-  return `<div class="hero"><div class="big" style="font-size:34px">Connect your bot</div>
-    <p class="muted">Paste a GitHub token that can read your <b>trading-bot</b> repo and start its workflows. It's stored only on this phone.</p></div>
-    <div class="label">Repo</div><input id="repo" value="${esc(cfg.repo)}" autocapitalize="off" autocorrect="off">
-    <div class="label">GitHub token</div><input id="tok" type="password" placeholder="github_pat_…" autocapitalize="off" autocorrect="off">
-    <button class="btn" onclick="saveSetup()">Connect</button>
-    <p class="note">Make it at github.com → Settings → Developer settings → Fine-grained tokens. Only select the trading-bot repo; permissions: <b>Contents: Read</b>, <b>Actions: Read and write</b>.</p>`;
-}
-window.saveSetup = async () => {
-  const repo = $("#repo").value.trim().replace(/^https?:\/\/(www\.)?github\.com\//i, "").replace(/\.git$/i, "").replace(/\/+$/, "");
-  const token = $("#tok").value.replace(/\s+/g, "");
-  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) return toast("Repo should look like elijahvickers-17/trading-bot");
-  if (!token) return toast("Paste your GitHub token first");
-  cfg = { token, repo };
-  try { await gh(""); store.set("gh_token", cfg.token); store.set("gh_repo", cfg.repo); toast("Connected"); load(); }
-  catch (e) {
-    const m = /^401/.test(e.message) ? "GitHub didn't accept that token. Copy it again and paste the whole thing."
-      : /^(403|404)/.test(e.message) ? "That token can't see the trading-bot repo. Make sure the token has it selected."
-      : "Couldn't reach GitHub: " + e.message;
-    toast(m, 7000);
-  }
-};
-
-const views = { home: viewHome, positions: viewPositions, decisions: viewDecisions, odds: viewOdds, goals: viewGoals, control: viewControl };
-window.go = t => { tab = t; store.set("tab", t); render(); window.scrollTo(0, 0); };
-function render() {
-  header();
-  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
-  $("#nav").classList.toggle("hide", !cfg.token);
-  $("#view").innerHTML = cfg.token ? views[tab]() : viewSetup();
-}
-document.querySelectorAll("nav button").forEach(b => b.onclick = () => { tab = b.dataset.tab; store.set("tab", tab); render(); window.scrollTo(0, 0); });
-
-let startY = null;
-addEventListener("touchstart", e => { startY = scrollY === 0 ? e.touches[0].clientY : null; }, { passive: true });
-addEventListener("touchend", e => { if (startY != null && e.changedTouches[0].clientY - startY > 90 && cfg.token) { toast("Refreshing…", 1200); load(); } startY = null; }, { passive: true });
-document.addEventListener("visibilitychange", () => { if (!document.hidden && cfg.token) load(); });
-
-const cached = store.get("cache"); if (cached) { try { data = JSON.parse(cached); } catch {} }
-render();
-if (cfg.token) load();
-</script>
+<script src="vendor/marked-12.0.2.min.js"></script>
+<script src="vendor/purify-3.3.3.min.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
