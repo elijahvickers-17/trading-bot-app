@@ -19,6 +19,7 @@
   let data = null, paused = false, runs = [], tab = store.get("tab", "home"), oddsCache = {}, loadError = "";
   let ctlReq = (() => { try { return JSON.parse(store.get("ctl_req") || "null"); } catch { return null; } })();
   let draft = null;
+  let refreshing = null;   // {at, note} while a price refresh is running
 
   function toast(msg, ms = 3600) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
 
@@ -152,6 +153,53 @@
   }
 
   // ---- views ---------------------------------------------------------------------------
+  // ---- refresh prices: runs the Monitor workflow (live Alpaca prices + stop checks) --
+  function refreshBar() {
+    const when = data && data.updated ? new Date(data.updated).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "—";
+    return `<div class="refresh row"><span class="muted" style="font-size:13px">${refreshing
+        ? `<span class="spin"></span> ${esc(refreshing.note)}`
+        : `Prices as of <b>${esc(when)}</b> · ${esc(ago(data && data.updated))}`}</span>
+      <button class="chip" data-act="refresh-prices" ${refreshing ? "disabled" : ""}>${refreshing ? "Updating…" : "↻ Refresh prices"}</button></div>`;
+  }
+
+  async function refreshPrices() {
+    if (refreshing) return;
+    const daily = runs.find(r => r.status !== "completed" && r.name === "Daily analysis");
+    refreshing = { at: Date.now(), note: daily ? "Analysis is running; prices refresh right after it finishes…" : "Getting live prices from Alpaca (about a minute)…" };
+    render();
+    try {
+      const busy = (await gh("actions/workflows/monitor.yml/runs?per_page=1")).workflow_runs?.[0];
+      if (!(busy && busy.status !== "completed")) await gh("actions/workflows/monitor.yml/dispatches", { method: "POST", body: JSON.stringify({ ref: "main" }) });
+    } catch (e) { refreshing = null; render(); return toast(explain(e, "Refreshing prices"), 8000); }
+    const limit = refreshing.at + (daily ? 90 : 5) * 60000;
+    const tick = async () => {
+      if (!refreshing) return;
+      try {
+        const r = (await gh("actions/workflows/monitor.yml/runs?per_page=3")).workflow_runs || [];
+        const mine = r.find(x => new Date(x.created_at) >= refreshing.at - 120000);
+        if (mine && mine.status === "completed") {
+          refreshing = null;
+          await load();
+          return toast(mine.conclusion === "success" ? "Prices updated" : "The price check failed on GitHub. Showing the last saved prices.", 5000);
+        }
+        if (mine && mine.status !== "queued" && !daily) { refreshing.note = "Reading prices and checking stops…"; render(); }
+      } catch {}
+      if (Date.now() > limit) { refreshing = null; render(); return toast("Still waiting on GitHub. Pull down to reload in a minute.", 6000); }
+      setTimeout(tick, 5000);
+    };
+    setTimeout(tick, 6000);
+  }
+
+  function miniHoldings() {
+    const ps = data.positions || [];
+    if (!ps.length) return "";
+    const total = ps.reduce((a, p) => a + (+p.pnl || 0), 0);
+    return `<div class="card list"><div class="row" style="padding-bottom:6px"><span class="label">Holdings</span><span class="num ${sign(total)}">${usd(total)} open</span></div>
+      ${ps.map(p => `<button class="item rowbtn" data-act="go" data-tab="positions"><div class="row"><span class="tk">${esc(p.ticker)}</span>
+        <span class="num ${sign(p.pnl)}">${usd(p.pnl)} · ${pct(p.pnl_pct)}</span></div>
+        <div class="row muted num" style="font-size:12.5px;margin-top:2px"><span>${esc(+p.qty)} @ ${usd(p.entry)} → ${usd(p.price)}</span><span>stop ${usd(p.stop)}</span></div></button>`).join("")}</div>`;
+  }
+
   function viewHome() {
     if (!data) return `${statusCard()}${running()}<div class="card empty">No results yet. The first run writes them — or press <b>Run analysis now</b> in Control.</div>`;
     const s = data.stats || {}, b = Object.entries(data.benchmarks || {});
@@ -164,11 +212,13 @@
       <div class="label">Bot equity · since ${esc(new Date(data.started).toLocaleDateString())}</div>
       <div class="big">${usd(data.equity)}</div>
       <div class="delta ${sign(data.return)}">${pct(data.return)} · ${usd(data.equity - data.capital)}</div>
+      ${refreshBar()}
       ${data.goals ? `<div style="margin-top:10px"><button class="chip" data-act="go" data-tab="goals">Goal: ${esc(data.goals.label)} · ${usd(data.capital, 0)} budget</button></div>` : ""}
       ${regimes && regimes.stocks ? `<div class="chips">${["stocks", "crypto"].map(k => { const r = regimes[k]; if (!r) return ""; const c = r.state === "risk_on" ? "var(--up)" : r.state === "risk_off" ? "var(--down)" : "var(--warn)";
         return `<span class="chip" style="border-color:${c}" title="${esc(r.why)}"><b style="color:${c}">●</b> ${k === "stocks" ? "Stocks" : "Crypto"}: ${esc(String(r.state).replace("_", " "))}</span>`; }).join("")}</div>` : ""}
     </div>
     <div class="card">${equityChart(data.equity_curve)}</div>
+    ${miniHoldings()}
     <div class="label" style="margin:16px 0 8px">Versus just holding</div>
     <div class="grid">
       ${beat.map(([k, r]) => `<div class="stat"><div class="label">${esc(k)}</div><div class="v ${sign(r)}">${pct(r)}</div>
@@ -195,7 +245,8 @@
     return `
     ${statusCard(true)}
     <div class="hero"><div class="label">Invested</div><div class="big">${usd(invested, 0)}</div>
-      <div class="delta muted">${usd(data.equity - invested, 0)} in cash · ${ps.length} position${ps.length === 1 ? "" : "s"}</div></div>
+      <div class="delta muted">${usd(data.equity - invested, 0)} in cash · ${ps.length} position${ps.length === 1 ? "" : "s"}</div>
+      ${refreshBar()}</div>
     <div class="card list">${ps.length ? ps.map(p => {
       const toStop = 1 - p.stop / p.price;
       return `<div class="item">
@@ -428,6 +479,7 @@
   }
 
   const handlers = {
+    "refresh-prices": () => refreshPrices(),
     go: el => { tab = el.dataset.tab; store.set("tab", tab); render(); scrollTo(0, 0); },
     report: el => openReport(+el.dataset.i),
     odds: el => { store.set("odds_sel", el.dataset.t); render(); },

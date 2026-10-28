@@ -103,6 +103,11 @@ textarea{min-height:120px;resize:vertical;line-height:1.45}
 .list>.rowbtn{border-top:1px solid var(--rule)}.list>.rowbtn:first-child{border-top:0}
 .planrow{font-size:13.5px;padding:5px 0;border-top:1px solid var(--rule)}
 button.chip{cursor:pointer}
+.refresh{margin-top:10px;align-items:center;gap:8px}
+.refresh .chip{white-space:nowrap}
+.chip:disabled{opacity:.6}
+.spin{display:inline-block;width:11px;height:11px;border:2px solid var(--rule);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite;vertical-align:-1px;margin-right:4px}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>

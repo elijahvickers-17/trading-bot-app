@@ -22,7 +22,7 @@ const status = {
   shadow: { ideas: 1, leader: null, bot: { trades: 1, pnl: -7.24, wins: 0, skipped_or_unfilled: 0, avg_ret: -0.016 }, agents: { trades: 0, pnl: 0, wins: 0, skipped_or_unfilled: 0, avg_ret: null },
     same_size: { n: 0 }, insights: { scored: 0 }, recent: [{ ticker: "APA", date: "2026-10-27", rating: "Overweight", plan: { entry_type: "limit", entry: 49.66, stop: 47.5, target: 56, size_usd: 300 }, bot: { status: "open", pnl: -7.24, entry: 51.24 }, agents: { status: "waiting", note: "limit $49.66 not reached yet (0 of 5 days)" } }], note: "Small sample" },
 };
-let dispatchStatus = 204, controlReport = null, dispatched = [];
+let dispatchStatus = 204, controlReport = null, dispatched = [], monitorRun = null;
 (async () => {
   const b = await chromium.launch();
   const page = await b.newPage();
@@ -32,6 +32,8 @@ let dispatchStatus = 204, controlReport = null, dispatched = [];
   await page.route("https://api.github.com/**", async route => {
     const u = route.request().url(), auth = route.request().headers().authorization;
     if (auth !== `Bearer ${TOKEN}`) return route.fulfill({ status: 401, body: "Bad credentials" });
+    if (u.includes("monitor.yml/dispatches")) { monitorRun = { created_at: new Date().toISOString(), status: "completed", conclusion: "success" }; status.positions[0].price = 52.5; status.updated = new Date().toISOString(); return route.fulfill({ status: 204, body: "" }); }
+    if (u.includes("monitor.yml/runs")) return route.fulfill({ status: 200, body: JSON.stringify({ workflow_runs: monitorRun ? [monitorRun] : [] }) });
     if (u.includes("/dispatches")) { dispatched.push(JSON.parse(route.request().postData())); return route.fulfill({ status: dispatchStatus, body: dispatchStatus === 204 ? "" : "Resource not accessible by personal access token" }); }
     if (u.includes("journal/status.json")) return route.fulfill({ status: 200, body: JSON.stringify(status) });
     if (u.includes("journal/control.json")) return controlReport ? route.fulfill({ status: 200, body: JSON.stringify(controlReport) }) : route.fulfill({ status: 404, body: "" });
@@ -61,6 +63,14 @@ let dispatchStatus = 204, controlReport = null, dispatched = [];
   await page.fill("#pin", "482913"); await page.click("[data-act=unlock]");
   await page.waitForSelector("text=Bot equity");
   ok(true, "right PIN unlocks");
+
+  // 2b. refresh prices from Today
+  ok(await page.isVisible("text=Refresh prices"), "Today shows a Refresh prices button");
+  ok(await page.isVisible(".card.list >> text=APA"), "Today lists the holdings");
+  await page.click("[data-act=refresh-prices]");
+  await page.waitForSelector("text=Prices updated", { timeout: 15000 });
+  ok(/52\.50/.test(await page.textContent("main")), "after refresh the new APA price shows");
+  if (process.env.SHOTS) { await page.setViewportSize({ width: 390, height: 900 }); await page.screenshot({ path: process.env.SHOTS + "/today.png" }); }
 
   // 3. hostile values from the API are shown as text, never run
   await page.click("nav button[data-tab=decisions]");
