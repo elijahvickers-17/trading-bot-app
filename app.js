@@ -95,7 +95,7 @@
   const COLOR = { done: "var(--up)", failed: "var(--down)", analyzing: "var(--accent)" };
   const planList = plan => (plan || []).map(p => `<div class="row planrow">
       <span><b style="color:${COLOR[p.status] || "var(--ink3)"}">${ICON[p.status] || "○"}</b> ${esc(p.ticker)}</span>
-      <span class="muted" style="text-align:right;max-width:70%">${p.status === "analyzing" ? "working…" : esc(p.result || p.status)}</span></div>`).join("");
+      <span class="muted" style="text-align:right;max-width:70%">${p.status === "analyzing" ? esc(p.result || "working…") : esc(p.result || p.status)}</span></div>`).join("");
 
   function running() {
     const r = runs.find(r => r.status !== "completed");
