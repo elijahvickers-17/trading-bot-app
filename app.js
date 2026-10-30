@@ -236,6 +236,16 @@
     <p class="note">Updated ${esc(ago(data.updated))}. ${(s.closed_trades || 0) < 20 ? "Under 20 completed trades: too few to judge the win rate yet." : ""}</p>`;
   }
 
+  function exitsLine(p) {
+    if (p.tp == null && p.trail_from == null) return "";
+    const parts = [];
+    if (p.tp != null) parts.push(`Take profit ${usd(p.tp)} (½)`);
+    else if (p.tp_taken) parts.push("½ profit taken");
+    parts.push(p.trail_on ? `<b class="up">Trailing on</b> · locked ${usd(p.locked_stop)}` : `Trailing from ${usd(p.trail_from)}`);
+    return `<div class="row" style="margin-top:4px;font-size:12.5px"><span class="muted">${parts.join(" · ")}</span>
+      <span class="muted">${p.on_server ? "on Alpaca" : "checked by bot"}</span></div>`;
+  }
+
   function viewPositions() {
     if (!data) return `<div class="empty">Nothing yet.</div>`;
     const ps = data.positions || [];
@@ -253,6 +263,7 @@
         <div class="row"><span class="tk">${esc(p.ticker)}</span><span class="num ${sign(p.pnl)}">${usd(p.pnl)} · ${pct(p.pnl_pct)}</span></div>
         <div class="row muted num" style="font-size:12.5px;margin-top:3px"><span>${esc((+p.qty).toLocaleString(undefined, { maximumFractionDigits: 6 }))} @ ${usd(p.entry)}</span><span>now ${usd(p.price)}</span></div>
         <div class="row" style="margin-top:8px;font-size:12.5px"><span class="${unprot[p.ticker] ? "down" : "muted"}">${unprot[p.ticker] ? "No server stop right now (retrying)" : `Stop ${usd(p.stop)} · ${prob(toStop, 1)} below`}</span><span class="muted">${p.tp_taken ? "½ profit taken · " : ""}since ${esc(p.since || "—")}</span></div>
+        ${exitsLine(p)}
         ${pend[p.ticker] ? `<div class="note warn">Sell in progress: ${esc(pend[p.ticker].reason)} · try ${esc(pend[p.ticker].attempts)}</div>` : ""}
       </div>`;
     }).join("") : `<div class="empty">No open positions.</div>`}</div>
