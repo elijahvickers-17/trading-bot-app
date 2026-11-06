@@ -17,6 +17,16 @@ GitHub-API backend with the bot server's own API.
   stop / take-profit / trailing, trades) · Agents (live run, A/B detail, scout, decisions) ·
   Odds (Time Machine) · Goals · Control.
 
+## Server mode (v2)
+
+Control → Connect to bot server: URL + app password → 30-day session token (`srv_url`,
+`srv_token` in localStorage; the password is never stored). Then everything goes through
+`api()` to the server: status every 8–15 s with live prices, activity feed, open Alpaca orders,
+position sheet (close / sell half / break-even / edit exits / pause stock / re-place exits),
+manual buy, test notification. GitHub mode still works when no server is connected.
+CSP `connect-src` allows `*.sslip.io` / `*.nip.io`; add a custom domain there if one is used.
+Tests: `node tests/server.e2e.cjs`.
+
 ## Rules
 
 - Escape every value from the API (`Core.esc`); sanitize Markdown with DOMPurify; keep the CSP

@@ -20,6 +20,10 @@
   let ctlReq = (() => { try { return JSON.parse(store.get("ctl_req") || "null"); } catch { return null; } })();
   let draft = null;
   let refreshing = null;   // {at, note} while a price refresh is running
+  // v2: the bot server. Its session token (30 days, can only talk to the bot) replaces the GitHub token.
+  let srv = { url: store.get("srv_url"), token: store.get("srv_token") };
+  const useServer = () => !!(srv.url && srv.token);
+  let events = [], orders = null, srvTimer = null;
 
   function toast(msg, ms = 3600) { const t = $("#toast"); t.textContent = msg; t.style.display = "block"; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", ms); }
 
@@ -38,7 +42,42 @@
     return opts.raw ? r.text() : r.json();
   }
 
+  class SrvError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
+  async function api(path, body, method) {
+    let r;
+    try {
+      r = await fetch(`${srv.url}/api/${path}`, {
+        method: method || (body !== undefined ? "POST" : "GET"), body: body !== undefined ? JSON.stringify(body) : undefined,
+        headers: { Authorization: `Bearer ${srv.token}`, "Content-Type": "application/json" }, cache: "no-store", referrerPolicy: "no-referrer",
+      });
+    } catch (e) { throw new SrvError(0, "Can't reach your bot server. Check your internet; if it persists the server may be down."); }
+    let j = null; try { j = await r.json(); } catch {}
+    if (r.status === 401 && path !== "login") { srv.token = ""; store.del("srv_token"); render(); }
+    if (!r.ok) throw new SrvError(r.status, (j && j.detail) || `Server error ${r.status}`);
+    return j;
+  }
+  const srvMsg = (e, what) => e instanceof SrvError ? `${what}: ${e.message}` : explain(e, what);
+
+  async function loadServer() {
+    try {
+      const [st, ev] = await Promise.all([api("status"), api("events").catch(() => events)]);
+      data = st; events = ev || [];
+      live = st.live || null;
+      paused = !!st.stopped;
+      runs = st.server && st.server.daily_running ? [{ status: "in_progress", name: "Daily analysis", id: live && live.run_id, created_at: live && live.started, run_started_at: live && live.started }] : [];
+      if (tab === "positions") orders = await api("orders").catch(() => orders);
+      store.set("cache", JSON.stringify(st));
+      loadError = "";
+    } catch (e) {
+      loadError = srvMsg(e, "Refreshing");
+    }
+    render();
+    clearTimeout(srvTimer);
+    if (useServer()) srvTimer = setTimeout(() => { if (!document.hidden) loadServer(); else srvTimer = null; }, runs.length ? 8000 : 15000);
+  }
+
   async function load() {
+    if (useServer()) return loadServer();
     try {
       const [status, stop, rr, lv] = await Promise.all([
         gh("contents/journal/status.json", { raw: true, allow404: true }),
@@ -164,6 +203,11 @@
 
   async function refreshPrices() {
     if (refreshing) return;
+    if (useServer()) {
+      refreshing = { at: Date.now(), note: "Checking positions with Alpaca…" }; render();
+      try { data = await api("refresh", {}); toast("Prices updated"); } catch (e) { toast(srvMsg(e, "Refresh"), 7000); }
+      refreshing = null; return loadServer();
+    }
     const daily = runs.find(r => r.status !== "completed" && r.name === "Daily analysis");
     refreshing = { at: Date.now(), note: daily ? "Analysis is running; prices refresh right after it finishes…" : "Getting live prices from Alpaca (about a minute)…" };
     render();
@@ -225,6 +269,7 @@
         <div class="s">${Math.abs(data.return - r) < 0.0005 ? "Bot is even with it" : (data.return > r ? "Bot is ahead" : "Bot is behind") + " by " + prob(Math.abs(data.return - r), 2)}</div></div>`).join("")}
     </div>
     ${!(data.positions || []).length && !s.closed_trades ? `<p class="note">The bot hasn't bought anything yet, so it's all cash at 0%. Any "ahead" or "behind" here is just the market moving, not the bot's skill.</p>` : ""}
+    ${activityCard()}
     ${abCard(false)}
     <div class="label" style="margin:16px 0 8px">Scorecard · completed trades, after fees</div>
     <div class="grid">
@@ -246,6 +291,64 @@
       <span class="muted">${p.on_server ? "on Alpaca" : "checked by bot"}</span></div>`;
   }
 
+  function ordersCard() {
+    if (!orders) return `<div class="label" style="margin:18px 0 8px">Orders waiting at Alpaca</div><div class="card empty">Loading…</div>`;
+    const kind = o => o.type === "limit" && o.side === "sell" ? `take-profit @ ${usd(o.limit)}` : o.type === "trailing_stop" ? `trailing stop ${o.trail_percent}%${o.stop ? ` (now ${usd(o.stop)})` : ""}`
+      : o.stop ? `stop @ ${usd(o.stop)}` : o.limit ? `limit @ ${usd(o.limit)}` : o.type;
+    return `<div class="label" style="margin:18px 0 8px">Orders waiting at Alpaca</div>
+      <div class="card list">${orders.map(o => `<div class="item"><div class="row"><span><b>${esc(o.side.toUpperCase())}</b> ${esc(o.symbol)} · ${esc(+o.qty)}</span>
+        <span class="muted" style="font-size:13px">${esc(kind(o))}</span></div><div class="note" style="margin-top:2px">${o.oco ? "one-cancels-other · " : ""}${esc(o.status)}</div></div>`).join("") || `<div class="empty">No open orders.</div>`}</div>`;
+  }
+
+  function positionSheet(t) {
+    const p = (data.positions || []).find(x => x.ticker === t);
+    if (!p) return toast("That position is gone - refreshing"), loadServer();
+    const pausedT = data.paused_tickers && data.paused_tickers[t];
+    sheet(`<div class="label">Position</div><h2 style="margin:6px 0">${esc(t)} <span class="num ${sign(p.pnl)}" style="font-size:18px">${usd(p.pnl)} · ${pct(p.pnl_pct)}</span></h2>
+      <div class="note">${esc(+p.qty)} @ ${usd(p.entry)} · now ${usd(p.price)} · stop ${usd(p.stop)}${p.tp != null ? ` · take-profit ${usd(p.tp)}` : ""}</div>
+      <div class="grid" style="margin-top:12px">
+        <button class="btn danger" data-act="pos-act" data-a="close" data-t="${esc(t)}">Close now</button>
+        <button class="btn ghost" data-act="pos-act" data-a="sell_half" data-t="${esc(t)}" ${+p.qty < 2 && !t.endsWith("-USD") ? "disabled" : ""}>Sell half</button>
+        <button class="btn ghost" data-act="pos-act" data-a="breakeven" data-t="${esc(t)}" ${p.price <= p.entry ? "disabled" : ""}>Stop to break-even</button>
+        <button class="btn ghost" data-act="pos-act" data-a="${pausedT ? "resume_ticker" : "pause_ticker"}" data-t="${esc(t)}">${pausedT ? "Let the bot trade it" : "Pause this stock"}</button>
+      </div>
+      <div class="label" style="margin-top:14px">Change exits</div>
+      <div class="grid"><input id="xStop" inputmode="decimal" placeholder="Stop ${usd(p.stop)}"><input id="xTp" inputmode="decimal" placeholder="Take-profit ${p.tp != null ? usd(p.tp) : "—"}"></div>
+      <button class="btn" data-act="pos-exits" data-t="${esc(t)}">Save exits</button>
+      <button class="btn ghost" data-act="pos-act" data-a="reprotect" data-t="${esc(t)}">Re-place exits at Alpaca</button>
+      <p class="note">"Pause this stock" stops the bot buying or selling it on its own; its stop and take-profit keep working. Every button waits for Alpaca to confirm.</p>
+      <div id="posResult"></div>`);
+  }
+
+  const ACT_WORD = { close: "Close", sell_half: "Sell half", breakeven: "Stop to break-even", pause_ticker: "Pause stock", resume_ticker: "Resume stock",
+    reprotect: "Re-place exits", set_exits: "Change exits", buy: "Buy", pause: "Pause", resume: "Resume", panic: "Sell everything" };
+  async function srvAction(body, where) {
+    const word = ACT_WORD[body.action] || body.action;
+    const box = where && $(where);
+    if (box) box.innerHTML = `<div class="card"><span class="spin"></span> ${esc(word)}: sent, waiting for Alpaca…</div>`;
+    try {
+      const r = await api("action", body);
+      const lines = [];
+      if (r.sold != null) lines.push(`sold ${r.sold}, ${r.left} left`);
+      if (r.closed && r.closed.length) lines.push(`confirmed closed: ${r.closed.join(", ")}`);
+      if (r.pending && r.pending.length) lines.push(`still open: ${r.pending.map(p => `${p.ticker} (${p.why})`).join(", ")}`);
+      if (r.errors && r.errors.length) lines.push(`failed: ${r.errors.map(e => e.ticker).join(", ")}`);
+      if (r.broker) lines.push(String(r.broker));
+      const msg = `${word}: ${r.confirmed ? "confirmed by Alpaca" : "sent - not confirmed yet"}${lines.length ? " · " + lines.join(" · ") : ""}`;
+      if (box) box.innerHTML = `<div class="card ${r.confirmed ? "" : "warnbox"}">${esc(msg)}</div>`; else toast(msg, 7000);
+    } catch (e) {
+      const msg = srvMsg(e, word);
+      if (box) box.innerHTML = `<div class="card warnbox">${esc(msg)}</div>`; else toast(msg, 8000);
+    }
+    loadServer();
+  }
+
+  function activityCard() {
+    if (!useServer() || !events.length) return "";
+    return `<div class="label" style="margin:16px 0 8px">Activity</div><div class="card list">${events.slice(0, 8).map(e => `<div class="item" style="font-size:13.5px">
+      <div class="row"><span class="${e.kind === "error" ? "down" : ""}">${esc(e.text)}</span><span class="muted num" style="font-size:12px">${esc(String(e.time).slice(11, 16))}</span></div></div>`).join("")}</div>`;
+  }
+
   function viewPositions() {
     if (!data) return `<div class="empty">Nothing yet.</div>`;
     const ps = data.positions || [];
@@ -259,14 +362,17 @@
       ${refreshBar()}</div>
     <div class="card list">${ps.length ? ps.map(p => {
       const toStop = 1 - p.stop / p.price;
-      return `<div class="item">
-        <div class="row"><span class="tk">${esc(p.ticker)}</span><span class="num ${sign(p.pnl)}">${usd(p.pnl)} · ${pct(p.pnl_pct)}</span></div>
+      const pausedT = data.paused_tickers && data.paused_tickers[p.ticker];
+      return `<${useServer() ? `button class="item rowbtn" data-act="pos" data-t="${esc(p.ticker)}"` : `div class="item"`}>
+        <div class="row"><span class="tk">${esc(p.ticker)}${pausedT ? ` <span class="pill warn">paused</span>` : ""}</span><span class="num ${sign(p.pnl)}">${usd(p.pnl)} · ${pct(p.pnl_pct)}</span></div>
         <div class="row muted num" style="font-size:12.5px;margin-top:3px"><span>${esc((+p.qty).toLocaleString(undefined, { maximumFractionDigits: 6 }))} @ ${usd(p.entry)}</span><span>now ${usd(p.price)}</span></div>
         <div class="row" style="margin-top:8px;font-size:12.5px"><span class="${unprot[p.ticker] ? "down" : "muted"}">${unprot[p.ticker] ? "No server stop right now (retrying)" : `Stop ${usd(p.stop)} · ${prob(toStop, 1)} below`}</span><span class="muted">${p.tp_taken ? "½ profit taken · " : ""}since ${esc(p.since || "—")}</span></div>
         ${exitsLine(p)}
         ${pend[p.ticker] ? `<div class="note warn">Sell in progress: ${esc(pend[p.ticker].reason)} · try ${esc(pend[p.ticker].attempts)}</div>` : ""}
-      </div>`;
+        ${useServer() ? `<div class="note" style="margin-top:6px">Tap for actions ›</div>` : ""}
+      </${useServer() ? "button" : "div"}>`;
     }).join("") : `<div class="empty">No open positions.</div>`}</div>
+    ${useServer() ? ordersCard() : ""}
     <div class="label" style="margin:18px 0 8px">Recent trades</div>
     <div class="card list">${(data.trades || []).slice(0, 30).map(t => {
       const failed = /error|skipped|cancel/i.test(t.status || "");
@@ -308,7 +414,8 @@
       <div id="rep" class="md"><p class="muted">Loading the agents' reasoning…</p></div>`);
     if (!d.report || !/^[\w.-]+\.md$/.test(d.report)) { $("#rep").innerHTML = `<p class="muted">${esc(d.detail || "No report saved.")}</p>`; return; }
     try {
-      const md = await gh(`contents/reports/${encodeURIComponent(d.report)}`, { raw: true });
+      const md = useServer() ? (await api(`report/${encodeURIComponent(d.report)}`)).markdown
+        : await gh(`contents/reports/${encodeURIComponent(d.report)}`, { raw: true });
       $("#rep").innerHTML = DOMPurify.sanitize(marked.parse(md), { FORBID_TAGS: ["style", "form", "input"], FORBID_ATTR: ["style"] });
     } catch (e) { $("#rep").innerHTML = `<p class="muted">${esc(explain(e, "Loading the report"))}</p>`; }
   }
@@ -343,8 +450,11 @@
   }
   async function loadOdds(t) {
     try {
-      const raw = await gh(`contents/journal/timemachine/${encodeURIComponent(t)}.json`, { raw: true, allow404: true });
-      oddsCache[t] = raw ? JSON.parse(raw) : { missing: true };
+      if (useServer()) oddsCache[t] = await api(`odds/${encodeURIComponent(t)}`);
+      else {
+        const raw = await gh(`contents/journal/timemachine/${encodeURIComponent(t)}.json`, { raw: true, allow404: true });
+        oddsCache[t] = raw ? JSON.parse(raw) : { missing: true };
+      }
     } catch { oddsCache[t] = { missing: true }; }
     if (tab === "odds") render();
   }
@@ -377,6 +487,8 @@
       <p class="note">${esc(s.detail)}</p></div>
     ${statusCard(true)}
     ${running()}
+    ${useServer() && data && data.server ? `<div class="card"><div class="label">Bot server</div><div class="note">Up since ${esc(String(data.server.up_since || "").slice(5, 16).replace("T", " "))} · last check ${esc(ago(data.server.last_tick))}
+      · live prices ${data.server.streams && data.server.streams.stocks === "connected" ? "on" : "off"}${data.server.last_error ? `<br><span class="down">Last error: ${esc(data.server.last_error)}</span>` : ""}</div></div>` : ""}
     <button class="btn" data-act="dispatch" data-file="daily.yml" data-msg="Analysis requested for the whole watchlist">Run analysis now</button>
     <select id="one">${tickers.map(t => `<option>${esc(t)}</option>`).join("")}</select>
     <button class="btn ghost" data-act="analyze-one">Analyze just this one</button>
@@ -384,7 +496,14 @@
     ${stopped ? `<button class="btn" data-act="control" data-action="resume" ${busy ? "disabled" : ""}>Resume trading</button>`
       : `<button class="btn ghost" data-act="control" data-action="pause" ${busy ? "disabled" : ""}>Pause trading</button>`}
     <button class="btn danger" data-act="panic" ${busy ? "disabled" : ""}>Sell everything &amp; pause</button>
+    ${useServer() ? `<div class="card" style="margin-top:18px"><div class="label">Buy by hand</div>
+      <div class="grid"><select id="buyT">${tickers.map(t => `<option>${esc(t)}</option>`).join("")}</select><input id="buyUsd" inputmode="decimal" placeholder="$ amount"></div>
+      <button class="btn ghost" data-act="buy">Review buy</button>
+      <p class="note">Approved stocks only. The bot caps the size, sets the stop from the stock's volatility and puts take-profit + stop on Alpaca.</p></div>` : ""}
     <div class="card" style="margin-top:22px"><div class="label">Settings</div>
+      ${useServer() ? `<div class="note">Connected to your bot server: ${esc(srv.url)}</div>
+        <button class="btn ghost" data-act="test-notify">Send a test notification</button>
+        <button class="btn ghost" data-act="srv-disconnect">Disconnect server</button>` : `<button class="btn ghost" data-act="srv-connect">Connect to bot server</button>`}
       <div class="note">Repo: ${esc(cfg.repo)}<br>Token: stored on this phone only, encrypted with your PIN. Unlocked until you close the app.</div>
       <button class="btn ghost" data-act="lock">Lock now</button>
       <button class="btn ghost" data-act="logout">Change token</button>
@@ -456,6 +575,13 @@
 
   // ---- token setup, lock screen, migration -----------------------------------------
   const failKey = "pin_fails";
+  function srvConnectForm() {
+    return `<h2>Connect to your bot server</h2><p class="note">The address and app password from the server setup. The app then talks to your server directly - no GitHub token needed.</p>
+      <div class="label">Server address</div><input id="srvUrl" value="${esc(srv.url || "")}" placeholder="https://1-2-3-4.sslip.io" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div class="label">App password</div><input id="srvPw" type="password" autocomplete="current-password">
+      <button class="btn" data-act="srv-login">Connect</button><button class="btn ghost" data-act="close-sheet">Cancel</button>`;
+  }
+
   function viewSetup() {
     return `<div class="hero"><div class="big" style="font-size:34px">Connect your bot</div>
       <p class="muted">Paste a GitHub token that can read your <b>trading-bot</b> repo and start its workflows, and pick a PIN. The token is saved on this phone only, encrypted with the PIN.</p></div>
@@ -464,6 +590,7 @@
       <div class="label">PIN (6+ characters)</div><input id="pin" type="password" inputmode="numeric" autocomplete="new-password">
       <div class="label">PIN again</div><input id="pin2" type="password" inputmode="numeric" autocomplete="new-password">
       <button class="btn" data-act="setup">Connect</button>
+      <button class="btn ghost" data-act="srv-connect">I have a bot server</button>
       <p class="note">Make it at github.com → Settings → Developer settings → Fine-grained tokens. Only select the trading-bot repo; permissions: <b>Contents: Read</b>, <b>Actions: Read and write</b>; set an expiry (90 days).</p>`;
   }
   function viewSecure() {
@@ -491,23 +618,72 @@
 
   const handlers = {
     "refresh-prices": () => refreshPrices(),
+    pos: el => positionSheet(el.dataset.t),
+    "pos-act": el => {
+      const a = el.dataset.a, t = el.dataset.t;
+      if ((a === "close" || a === "sell_half") && !el.dataset.sure) {
+        el.dataset.sure = "1"; el.textContent = a === "close" ? `Tap again to close ${t}` : `Tap again to sell half`; return;
+      }
+      srvAction({ action: a, ticker: t }, "#posResult");
+    },
+    "pos-exits": el => {
+      const n = v => { v = String(v || "").replace(/[$,\s]/g, ""); return v ? +v : null; };
+      const stop = n($("#xStop").value), tp = n($("#xTp").value);
+      if (stop == null && tp == null) return toast("Enter a new stop or take-profit");
+      if ((stop != null && !(stop > 0)) || (tp != null && !(tp > 0))) return toast("Prices must be numbers");
+      srvAction({ action: "set_exits", ticker: el.dataset.t, stop, tp }, "#posResult");
+    },
+    buy: () => {
+      const t = $("#buyT").value, usdAmt = +String($("#buyUsd").value).replace(/[$,\s]/g, "");
+      if (!Core.TICKER.test(t) || !(usdAmt >= 25)) return toast("Pick a stock and an amount of at least $25");
+      sheet(`<h2>Buy ${esc(t)}?</h2><p>Up to ${usd(usdAmt, 0)} at market (the bot may buy less to stay inside your limits).</p>
+        <button class="btn" data-act="buy-confirm" data-t="${esc(t)}" data-usd="${esc(usdAmt)}">Buy</button><button class="btn ghost" data-act="close-sheet">Cancel</button><div id="posResult"></div>`);
+    },
+    "buy-confirm": el => srvAction({ action: "buy", ticker: el.dataset.t, usd: +el.dataset.usd }, "#posResult"),
+    "test-notify": async () => { try { const r = await api("test-notification", {}); toast(`Sent to topic ${r.topic}. No buzz? The ntfy app must subscribe to exactly that name.`, 9000); } catch (e) { toast(srvMsg(e, "Test"), 8000); } },
+    "srv-connect": () => sheet(srvConnectForm()),
+    "srv-login": async () => {
+      let url = String($("#srvUrl").value || "").trim().replace(/\/+$/, "");
+      if (url && !/^https:\/\//.test(url)) url = "https://" + url;
+      if (!/^https:\/\/[\w.-]+(:\d+)?$/.test(url)) return toast("Enter the server address, e.g. https://1-2-3-4.sslip.io");
+      srv = { url, token: "" };
+      try {
+        const r = await api("login", { password: $("#srvPw").value });
+        srv.token = r.token; store.set("srv_url", url); store.set("srv_token", r.token);
+        closeSheet(); toast("Connected to your bot server"); tab = "home"; loadServer();
+      } catch (e) { srv = { url: store.get("srv_url"), token: store.get("srv_token") }; toast(srvMsg(e, "Connecting"), 8000); }
+    },
+    "srv-disconnect": () => { store.del("srv_token"); store.del("srv_url"); srv = { url: "", token: "" }; clearTimeout(srvTimer); render(); toast("Disconnected from the server"); },
     go: el => { tab = el.dataset.tab; store.set("tab", tab); render(); scrollTo(0, 0); },
     report: el => openReport(+el.dataset.i),
     odds: el => { store.set("odds_sel", el.dataset.t); render(); },
     profile: el => { draft.profile = el.dataset.k; render(); },
-    "save-goals": () => {
+    "save-goals": async () => {
+      if (useServer()) {
+        const goals = { profile: draft.profile, budget: +String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim() };
+        try { await api("goals", goals); toast("Goals saved. They apply from the next check."); draft = null; loadServer(); } catch (e) { toast(srvMsg(e, "Saving goals"), 8000); }
+        return;
+      }
       const goals = { profile: draft.profile, budget: String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim() };
       if (goals.budget && !(+goals.budget >= 50)) return toast("Budget must be at least $50");
       control("goals", { goals: JSON.stringify(goals) });
     },
-    dispatch: el => dispatch(el.dataset.file, el.dataset.file === "daily.yml" ? { tickers: "" } : {}, el.dataset.msg),
-    "analyze-one": () => { const t = $("#one").value; if (!Core.TICKER.test(t)) return toast("Pick a ticker from the list"); dispatch("daily.yml", { tickers: t }, "Analysis requested for " + t); },
-    control: el => control(el.dataset.action),
+    dispatch: async el => {
+      if (useServer()) {
+        if (el.dataset.file === "monitor.yml") return refreshPrices();
+        try { await api("run", { tickers: [] }); toast("Analysis started on your server"); } catch (e) { toast(srvMsg(e, "Starting the run"), 8000); }
+        return loadServer();
+      }
+      dispatch(el.dataset.file, el.dataset.file === "daily.yml" ? { tickers: "" } : {}, el.dataset.msg);
+    },
+    "analyze-one": async () => { const t = $("#one").value; if (!Core.TICKER.test(t)) return toast("Pick a ticker from the list");
+      if (useServer()) { try { await api("run", { tickers: [t] }); toast("Analyzing " + t); } catch (e) { toast(srvMsg(e, "Starting"), 8000); } return loadServer(); } dispatch("daily.yml", { tickers: t }, "Analysis requested for " + t); },
+    control: el => useServer() ? srvAction({ action: el.dataset.action }) : control(el.dataset.action),
     panic: () => sheet(`<h2>Sell everything?</h2><p>This sends a close order for every position the bot holds and pauses it. The app then shows which sales the broker <b>confirmed</b> and which are only <b>submitted</b> (e.g. stocks while the market is closed fill at the next open). Type <b>SELL</b> to confirm.</p>
       <input id="confirm" autocomplete="off" autocapitalize="characters" placeholder="SELL">
       <button class="btn danger" data-act="panic-confirm">Sell everything</button>
       <button class="btn ghost" data-act="close-sheet">Cancel</button>`),
-    "panic-confirm": () => { if ($("#confirm").value.trim().toUpperCase() !== "SELL") return toast("Type SELL to confirm"); closeSheet(); control("panic"); },
+    "panic-confirm": () => { if ($("#confirm").value.trim().toUpperCase() !== "SELL") return toast("Type SELL to confirm"); closeSheet(); useServer() ? srvAction({ action: "panic" }) : control("panic"); },
     "close-sheet": closeSheet,
     "ctl-dismiss": () => { ctlReq = null; store.del("ctl_req"); render(); },
     lock: () => { cfg.token = ""; render(); },
@@ -555,18 +731,26 @@
   const views = { home: viewHome, positions: viewPositions, decisions: viewDecisions, odds: viewOdds, goals: viewGoals, control: viewControl };
   function render() {
     const needSecure = !!legacyToken && !store.get("gh_vault") && store.get("gh_token");
-    const locked = !cfg.token && store.get("gh_vault");
+    const locked = !cfg.token && store.get("gh_vault") && !useServer();
     header();
     document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
-    $("#nav").classList.toggle("hide", !cfg.token || needSecure);
-    $("#view").innerHTML = needSecure ? viewSecure() : cfg.token ? (views[tab] || viewHome)() : locked ? viewLock() : viewSetup();
+    const signedIn = useServer() || cfg.token;
+    $("#nav").classList.toggle("hide", !signedIn || (needSecure && !useServer()));
+    $("#view").innerHTML = needSecure && !useServer() ? viewSecure() : signedIn ? (views[tab] || viewHome)() : locked ? viewLock() : viewSetup();
   }
-  document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => { tab = b.dataset.tab; store.set("tab", tab); render(); scrollTo(0, 0); }));
+  document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => {
+    tab = b.dataset.tab; store.set("tab", tab); render(); scrollTo(0, 0);
+    if (useServer() && tab === "positions") api("orders").then(o => { orders = o; render(); }).catch(() => {});
+  }));
 
   let startY = null;
   addEventListener("touchstart", e => { startY = scrollY === 0 ? e.touches[0].clientY : null; }, { passive: true });
-  addEventListener("touchend", e => { if (startY != null && e.changedTouches[0].clientY - startY > 90 && cfg.token) { toast("Refreshing…", 1200); load(); } startY = null; }, { passive: true });
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && cfg.token) { load(); if (ctlReq) pollControl(); } });
+  addEventListener("touchend", e => { if (startY != null && e.changedTouches[0].clientY - startY > 90 && (cfg.token || useServer())) { toast("Refreshing…", 1200); load(); } startY = null; }, { passive: true });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) return;
+    if (useServer()) loadServer();
+    else if (cfg.token) { load(); if (ctlReq) pollControl(); }
+  });
   setInterval(() => {   // count the wrong-PIN wait down; the input is disabled meanwhile, so re-rendering loses nothing
     const until = +store.get("pin_until", "0");
     if (!cfg.token && until && $("#pin")) { if (Date.now() >= until) store.del("pin_until"); render(); }
@@ -575,5 +759,6 @@
   const cached = store.get("cache"); if (cached) { try { data = JSON.parse(cached); } catch {} }
   if (legacyToken && !store.get("gh_vault")) cfg.token = legacyToken;   // usable once, until a PIN is set
   render();
-  if (cfg.token && store.get("gh_vault")) { load(); pollControl(); }
+  if (useServer()) loadServer();
+  else if (cfg.token && store.get("gh_vault")) { load(); pollControl(); }
 })();

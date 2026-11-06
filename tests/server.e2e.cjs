@@ -1,0 +1,79 @@
+// Server mode (v2): connect, position actions, broker-confirmed results. Mocked server, no network.
+// Run: node tests/server.e2e.cjs
+const { chromium } = require("playwright");
+const http = require("http"), fs = require("fs"), path = require("path");
+const root = path.resolve(__dirname, "..");
+const srv = http.createServer((q, r) => {
+  const rel = decodeURIComponent(q.url.split("?")[0]); const f = path.join(root, rel === "/" ? "index.html" : rel);
+  if (!f.startsWith(root) || !fs.existsSync(f)) { r.writeHead(404); return r.end(); }
+  r.writeHead(200, { "content-type": f.endsWith(".js") ? "text/javascript" : "text/html" }); fs.createReadStream(f).pipe(r);
+}).listen(0);
+const BASE = `http://127.0.0.1:${srv.address().port}/`, SERVER = "https://1-2-3-4.sslip.io";
+const now = new Date().toISOString();
+const status = { updated: now, mode: "paper", state: "active", stopped: false, capital: 10000, equity: 10020, return: 0.002, started: now,
+  benchmarks: { SPY: -0.01 }, stats: {}, equity_curve: [], trades: [], decisions: [], pending_exits: [], unprotected: {},
+  positions: [{ ticker: "ACN", qty: 2, entry: 244.84, price: 262.6, value: 525.2, pnl: 35.5, pnl_pct: 0.0725, stop: 220.36, tp: 293.81, trail_from: 269.3, on_server: true },
+              { ticker: "TSLA", qty: 1, entry: 404.78, price: 408.2, value: 408.2, pnl: 3.4, pnl_pct: 0.008, stop: 371.35, tp: 471.66, trail_from: 438, on_server: true }],
+  watchlist: { stocks: ["ACN", "TSLA"], crypto: [] }, paused_tickers: {},
+  server: { up_since: now, last_tick: now, daily_running: false, last_error: "", streams: { stocks: "connected" } }, live: null };
+const calls = [];
+(async () => {
+  const b = await chromium.launch(); const page = await b.newPage(); const errors = [];
+  page.on("pageerror", e => errors.push(String(e)));
+  await page.route(SERVER + "/api/**", async route => {
+    const u = new URL(route.request().url()), p = u.pathname.replace("/api/", ""), body = route.request().postData();
+    calls.push([p, body ? JSON.parse(body) : null]);
+    const json = (o, s = 200) => route.fulfill({ status: s, contentType: "application/json", body: JSON.stringify(o) });
+    if (p === "login") return JSON.parse(body).password === "secret-pass-1" ? json({ token: "T", days: 30 }) : json({ detail: "Wrong password." }, 401);
+    if (route.request().headers().authorization !== "Bearer T") return json({ detail: "Sign in again" }, 401);
+    if (p === "status" || p === "refresh") return json(status);
+    if (p === "events") return json([{ time: now, kind: "fill", text: "SELL ACN 1 @ 262.63 (limit)" }]);
+    if (p === "orders") return json([{ symbol: "ACN", side: "sell", type: "limit", qty: 1, limit: 293.81, stop: null, oco: true, status: "new" }]);
+    if (p === "action") {
+      const a = JSON.parse(body);
+      if (a.action === "sell_half" && a.ticker === "TSLA") return json({ detail: "TSLA has 1 share(s) - can't sell half; use Close" }, 400);
+      if (a.action === "close") return json({ action: "close", confirmed: true, sold: 2, left: 0, broker: "filled" });
+      if (a.action === "panic") return json({ confirmed: false, closed: ["ACN"], pending: [{ ticker: "TSLA", why: "market closed - order queued" }], errors: [] });
+      return json({ confirmed: true, broker: "1 sh: take-profit @ 300.00 / stop @ 245.10" });
+    }
+    return json({});
+  });
+  const ok = (c, m) => { if (!c) { console.log("FAIL:", m); process.exitCode = 1; } else console.log("ok:", m); };
+  await page.goto(BASE); await page.evaluate(() => localStorage.clear()); await page.reload();
+  await page.click("[data-act=srv-connect]");
+  await page.fill("#srvUrl", "1-2-3-4.sslip.io"); await page.fill("#srvPw", "nope"); await page.click("[data-act=srv-login]");
+  await page.waitForSelector("text=Wrong password");
+  ok(true, "wrong password is refused with the server's reason");
+  await page.fill("#srvPw", "secret-pass-1"); await page.click("[data-act=srv-login]");
+  await page.waitForSelector("text=Bot equity");
+  const ls = await page.evaluate(() => JSON.stringify(localStorage));
+  ok(!ls.includes("secret-pass-1") && ls.includes("srv_token"), "password not stored; session token is");
+  ok(await page.isVisible("text=SELL ACN 1 @ 262.63"), "activity feed shows fills");
+  await page.click("nav button[data-tab=positions]");
+  await page.waitForSelector("text=Orders waiting at Alpaca");
+  await page.waitForSelector("text=take-profit @ $293.81");
+  ok(true, "open Alpaca orders listed");
+  await page.click("[data-act=pos][data-t=TSLA]");
+  ok(await page.isDisabled("[data-act=pos-act][data-a=sell_half]"), "sell half disabled for 1 share");
+  await page.click("[data-act=close-sheet]");
+  await page.click("[data-act=pos][data-t=ACN]");
+  await page.click("[data-act=pos-act][data-a=close]");
+  ok(!calls.some(c => c[0] === "action"), "first tap on Close only asks to confirm");
+  await page.click("[data-act=pos-act][data-a=close]");
+  await page.waitForSelector("text=Close: confirmed by Alpaca");
+  ok(/sold 2, 0 left/.test(await page.textContent("#posResult")), "close shows what Alpaca confirmed");
+  await page.click("[data-act=close-sheet]");
+  await page.click("[data-act=pos][data-t=ACN]");
+  if (process.env.SHOTS) { await page.setViewportSize({ width: 390, height: 900 }); await page.screenshot({ path: process.env.SHOTS + "/sheet.png" }); }
+  await page.fill("#xStop", "245.10"); await page.fill("#xTp", "$300");
+  await page.click("[data-act=pos-exits]");
+  await page.waitForSelector("text=Change exits: confirmed by Alpaca");
+  ok(calls.some(c => c[0] === "action" && c[1].action === "set_exits" && c[1].stop === 245.1 && c[1].tp === 300), "exits sent as numbers");
+  await page.click("[data-act=close-sheet]");
+  await page.click("nav button[data-tab=control]");
+  await page.click("[data-act=panic]"); await page.fill("#confirm", "SELL"); await page.click("[data-act=panic-confirm]");
+  await page.waitForSelector("#toast >> text=not confirmed yet");
+  ok(/still open: TSLA/.test(await page.textContent("#toast")), "panic shows confirmed vs still-open");
+  ok(errors.length === 0, "no script errors " + errors.join(" | "));
+  await b.close(); srv.close();
+})();
