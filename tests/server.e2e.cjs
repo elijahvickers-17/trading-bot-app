@@ -15,6 +15,12 @@ const status = { updated: now, mode: "paper", state: "active", stopped: false, c
   positions: [{ ticker: "ACN", qty: 2, entry: 244.84, price: 262.6, value: 525.2, pnl: 35.5, pnl_pct: 0.0725, stop: 220.36, tp: 293.81, trail_from: 269.3, on_server: true },
               { ticker: "TSLA", qty: 1, entry: 404.78, price: 408.2, value: 408.2, pnl: 3.4, pnl_pct: 0.008, stop: 371.35, tp: 471.66, trail_from: 438, on_server: true }],
   watchlist: { stocks: ["ACN", "TSLA"], crypto: [] }, paused_tickers: {},
+  goals: { profile: "growth", label: "Fast growth", budget: null, notes: "" },
+  profiles: { growth: { label: "Fast growth", summary: "x", sleeves: { intraday: 0.6, swing: 0.4, long_term: 0 } },
+              balanced: { label: "Balanced", summary: "y", sleeves: { intraday: 0.3, swing: 0.4, long_term: 0.3 } } },
+  day_trading: { active: true, share: 0.6, date: new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }), pnl: 12.5,
+                 watch: [{ ticker: "NVDA", gap: 0.034 }], trades: [{ ticker: "NVDA", setup: "orb", qty: 10, fill: 190.1, pnl: 12.5 }],
+                 backtest: { period: ["2026-09-11", "2026-11-05"], sleeve_equity: 6000, stats: { trades: 75, total_pnl: -75.34, return_on_sleeve: -0.0126, win_rate: 0.507, profit_factor: 0.85 } } },
   server: { up_since: now, last_tick: now, daily_running: false, last_error: "", streams: { stocks: "connected" } }, live: null };
 const calls = [];
 (async () => {
@@ -28,6 +34,7 @@ const calls = [];
     if (route.request().headers().authorization !== "Bearer T") return json({ detail: "Sign in again" }, 401);
     if (p === "status" || p === "refresh") return json(status);
     if (p === "events") return json([{ time: now, kind: "fill", text: "SELL ACN 1 @ 262.63 (limit)" }]);
+    if (p === "goals") return json({ saved: true });
     if (p === "orders") return json([{ symbol: "ACN", side: "sell", type: "limit", qty: 1, limit: 293.81, stop: null, oco: true, status: "new" }]);
     if (p === "action") {
       const a = JSON.parse(body);
@@ -74,6 +81,18 @@ const calls = [];
   await page.click("[data-act=panic]"); await page.fill("#confirm", "SELL"); await page.click("[data-act=panic-confirm]");
   await page.waitForSelector("#toast >> text=not confirmed yet");
   ok(/still open: TSLA/.test(await page.textContent("#toast")), "panic shows confirmed vs still-open");
+  await page.click("nav button[data-tab=home]");
+  ok(await page.isVisible("text=Day trading · 60% of the money") && await page.isVisible("text=Losing in the test so far"), "Today shows day trading + an honest backtest line");
+  await page.click("nav button[data-tab=goals]");
+  await page.fill("[data-sleeve=intraday]", "50"); await page.dispatchEvent("[data-sleeve=intraday]", "change");
+  await page.click("[data-act=save-goals]");
+  await page.waitForSelector("#toast >> text=add up to 100%");
+  ok(true, "a split that isn't 100% is refused");
+  await page.fill("[data-sleeve=swing]", "50"); await page.dispatchEvent("[data-sleeve=swing]", "change");
+  await page.click("[data-act=save-goals]");
+  await page.waitForTimeout(400);
+  const g = calls.filter(c => c[0] === "goals").pop();
+  ok(g && g[1].sleeves.intraday === 0.5 && g[1].sleeves.swing === 0.5 && g[1].sleeves.long_term === 0, "custom split saved");
   ok(errors.length === 0, "no script errors " + errors.join(" | "));
   await b.close(); srv.close();
 })();

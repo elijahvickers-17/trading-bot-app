@@ -269,6 +269,7 @@
         <div class="s">${Math.abs(data.return - r) < 0.0005 ? "Bot is even with it" : (data.return > r ? "Bot is ahead" : "Bot is behind") + " by " + prob(Math.abs(data.return - r), 2)}</div></div>`).join("")}
     </div>
     ${!(data.positions || []).length && !s.closed_trades ? `<p class="note">The bot hasn't bought anything yet, so it's all cash at 0%. Any "ahead" or "behind" here is just the market moving, not the bot's skill.</p>` : ""}
+    ${dayTradingCard()}
     ${activityCard()}
     ${abCard(false)}
     <div class="label" style="margin:16px 0 8px">Scorecard · completed trades, after fees</div>
@@ -341,6 +342,26 @@
       if (box) box.innerHTML = `<div class="card warnbox">${esc(msg)}</div>`; else toast(msg, 8000);
     }
     loadServer();
+  }
+
+  function dayTradingCard() {
+    const d = data && data.day_trading;
+    if (!d) return "";
+    const bt = d.backtest && d.backtest.stats;
+    const share = Math.round((d.share || 0) * 100);
+    if (!share && !bt) return "";
+    const today = d.date === new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+    const trades = today ? d.trades || [] : [];
+    return `<div class="card"><div class="row"><span class="label">Day trading · ${share}% of the money</span>
+        <span class="pill ${d.active ? "live" : ""}">${d.active ? "on" : "needs the server"}</span></div>
+      ${d.active && today ? `<div style="font:600 18px var(--sans);margin:8px 0" class="${sign(d.pnl)}">${trades.length ? `Today ${usd(d.pnl)}` : "No trades yet today"}</div>
+        ${d.stopped ? `<div class="note down">${esc(d.stopped)}</div>` : ""}
+        ${(d.watch || []).length ? `<div class="chips">${d.watch.map(w => `<span class="chip">${esc(w.ticker)} ${pct(w.gap, 1)}</span>`).join("")}</div>` : ""}
+        ${trades.map(t => `<div class="row" style="font-size:13.5px;margin-top:6px"><span><b>${esc(t.ticker)}</b> ${esc(t.setup)} · ${esc(t.qty)} @ ${usd(t.fill || t.signal_price)}</span>
+          <span class="${sign(t.pnl)}">${t.pnl != null ? usd(t.pnl) : esc(t.status || "")}</span></div>`).join("")}` : ""}
+      ${!d.active ? `<p class="note">Day trades need the always-on bot server (GitHub can't watch charts minute by minute). Until it runs, this money stays with the swing trades.</p>` : ""}
+      ${bt ? `<p class="note">Backtest ${esc((d.backtest.period || []).join(" → "))}: ${bt.trades} trades, ${usd(bt.total_pnl)} (${pct(bt.return_on_sleeve)} of ${usd(d.backtest.sleeve_equity, 0)}), win rate ${bt.win_rate != null ? Math.round(bt.win_rate * 100) + "%" : "—"}, profit factor ${bt.profit_factor ?? "—"}.
+        ${bt.total_pnl < 0 ? " <b>Losing in the test so far</b> - it stays paper-only and keeps being measured." : ""}</p>` : ""}</div>`;
   }
 
   function activityCard() {
@@ -462,12 +483,23 @@
   function viewGoals() {
     if (!data || !data.profiles) return `<div class="empty">Goals appear after the bot's first run.</div>`;
     const g = data.goals || {};
-    draft = draft || { profile: g.profile || "growth", budget: g.budget ?? "", notes: g.notes || "" };
+    draft = draft || { profile: g.profile || "growth", budget: g.budget ?? "", notes: g.notes || "", sleeves: g.sleeves ? { ...g.sleeves } : null };
+    const preset = (data.profiles[draft.profile] || {}).sleeves || { intraday: 0, swing: 1, long_term: 0 };
+    const sl = draft.sleeves || preset;
+    const pctv = x => Math.round((+x || 0) * 100);
+    const total = pctv(sl.intraday) + pctv(sl.swing) + pctv(sl.long_term);
     return `<div class="hero"><div class="label">Your goals</div><div style="font:600 22px var(--sans)">Tell the bot what you're investing for</div>
       <p class="note">Your strategy sets the hard risk rules. Your own words go to the AI agents with every analysis, so their calls fit your situation. Change it any time.</p></div>
     ${controlCard()}
     <div class="label" style="margin-top:6px">Strategy</div>
     ${Object.entries(data.profiles).map(([k, p]) => `<button class="opt ${draft.profile === k ? "on" : ""}" data-act="profile" data-k="${esc(k)}"><b>${esc(p.label)}</b><span>${esc(p.summary)}</span></button>`).join("")}
+    <div class="label" style="margin-top:16px">How the money is split</div>
+    <div class="card"><div class="grid">
+      ${[["intraday", "Day trades"], ["swing", "Swing (days–weeks)"], ["long_term", "Long-term"]].map(([k, name]) =>
+        `<label style="font-size:13px">${name}<input data-act="none" data-sleeve="${k}" inputmode="numeric" value="${pctv(sl[k])}" style="margin-top:4px"></label>`).join("")}
+    </div>
+    <div class="note ${total === 100 ? "" : "down"}">${total}% ${total === 100 ? "" : "- must add up to 100%"} · ${draft.sleeves ? `custom <button class="chip" data-act="sleeves-reset">use the preset</button>` : "preset for this strategy"}</div>
+    <p class="note">Day trades open and close the same day (only while the bot server runs). Long-term money follows the swing rules for now.</p></div>
     <div class="label" style="margin-top:16px">Budget for the bot</div>
     <input id="gBudget" data-bind="budget" inputmode="decimal" placeholder="${esc(usd(data.capital, 0))} (current)" value="${esc(draft.budget)}">
     <div class="label">In your own words</div>
@@ -657,14 +689,17 @@
     go: el => { tab = el.dataset.tab; store.set("tab", tab); render(); scrollTo(0, 0); },
     report: el => openReport(+el.dataset.i),
     odds: el => { store.set("odds_sel", el.dataset.t); render(); },
-    profile: el => { draft.profile = el.dataset.k; render(); },
+    profile: el => { draft.profile = el.dataset.k; draft.sleeves = null; render(); },
+    "sleeves-reset": () => { draft.sleeves = null; render(); },
     "save-goals": async () => {
+      const sl = draft.sleeves;
+      if (sl && Math.abs((+sl.intraday || 0) + (+sl.swing || 0) + (+sl.long_term || 0) - 1) > 0.011) return toast("The split must add up to 100%");
       if (useServer()) {
-        const goals = { profile: draft.profile, budget: +String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim() };
+        const goals = { profile: draft.profile, budget: +String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim(), sleeves: sl || null };
         try { await api("goals", goals); toast("Goals saved. They apply from the next check."); draft = null; loadServer(); } catch (e) { toast(srvMsg(e, "Saving goals"), 8000); }
         return;
       }
-      const goals = { profile: draft.profile, budget: String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim() };
+      const goals = { profile: draft.profile, budget: String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim(), sleeves: sl || null };
       if (goals.budget && !(+goals.budget >= 50)) return toast("Budget must be at least $50");
       control("goals", { goals: JSON.stringify(goals) });
     },
@@ -725,7 +760,15 @@
     const h = handlers[el.dataset.act];
     if (h) { e.preventDefault(); h(el); }
   });
-  document.addEventListener("input", e => { const k = e.target.dataset && e.target.dataset.bind; if (k && draft) draft[k] = e.target.value; });
+  document.addEventListener("input", e => {
+    const ds = e.target.dataset || {};
+    if (ds.bind && draft) draft[ds.bind] = e.target.value;
+    if (ds.sleeve && draft) {
+      const preset = (data.profiles[draft.profile] || {}).sleeves || { intraday: 0, swing: 1, long_term: 0 };
+      draft.sleeves = { ...(draft.sleeves || preset), [ds.sleeve]: Math.max(0, Math.min(100, +e.target.value || 0)) / 100 };
+    }
+  });
+  document.addEventListener("change", e => { if (e.target.dataset && e.target.dataset.sleeve) render(); });
   document.addEventListener("keydown", e => { if (e.key === "Enter" && e.target.id === "pin" && !$("#pin2")) handlers.unlock(); });
 
   const views = { home: viewHome, positions: viewPositions, decisions: viewDecisions, odds: viewOdds, goals: viewGoals, control: viewControl };
