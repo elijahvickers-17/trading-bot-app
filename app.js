@@ -73,7 +73,8 @@
     }
     render();
     clearTimeout(srvTimer);
-    if (useServer()) srvTimer = setTimeout(() => { if (!document.hidden) loadServer(); else srvTimer = null; }, runs.length ? 8000 : 15000);
+    const asking = data && data.approvals && (data.approvals.pending || []).length;
+    if (useServer()) srvTimer = setTimeout(() => { if (!document.hidden) loadServer(); else srvTimer = null; }, runs.length || asking ? 8000 : 15000);
   }
 
   async function load() {
@@ -245,12 +246,13 @@
   }
 
   function viewHome() {
-    if (!data) return `${statusCard()}${running()}<div class="card empty">No results yet. The first run writes them — or press <b>Run analysis now</b> in Control.</div>`;
+    if (!data) return `${statusCard()}${approvalsCard()}${running()}<div class="card empty">No results yet. The first run writes them — or press <b>Run analysis now</b> in Control.</div>`;
     const s = data.stats || {}, b = Object.entries(data.benchmarks || {});
     const beat = b.filter(([, r]) => r != null);
     const regimes = data.scout && data.scout.regimes;
     return `
     ${statusCard(true)}
+    ${approvalsCard()}
     ${running()}
     <div class="hero">
       <div class="label">Bot equity · since ${esc(new Date(data.started).toLocaleDateString())}</div>
@@ -362,6 +364,59 @@
       ${!d.active ? `<p class="note">${d.enabled ? "Day trades need the always-on bot server (GitHub can't watch charts minute by minute)." : "Switched off in Goals."} Until it runs, this money stays with the swing trades.</p>` : ""}
       ${bt ? `<p class="note">Backtest ${esc((d.backtest.period || []).join(" → "))}: ${bt.trades} trades, ${usd(bt.total_pnl)} (${pct(bt.return_on_sleeve)} of ${usd(d.backtest.sleeve_equity, 0)}), win rate ${bt.win_rate != null ? Math.round(bt.win_rate * 100) + "%" : "—"}, profit factor ${bt.profit_factor ?? "—"}.
         ${bt.total_pnl < 0 ? " <b>Losing in the test so far</b> - it stays paper-only and keeps being measured." : ""}</p>` : ""}</div>`;
+  }
+
+  // ---- approval mode (server only): the bot proposes, you approve or deny ----------------
+  const propWhat = p => p.side === "buy" ? `Buy ${usd(p.notional, 0)} of ${p.ticker}` : `Sell ${p.fraction >= 0.999 ? "all" : Math.round(p.fraction * 100) + "%"} of ${p.ticker}`;
+  function minutesLeft(iso) { return Math.max(0, Math.round((new Date(iso) - Date.now()) / 60000)); }
+  function approvalsCard() {
+    const a = useServer() && data && data.approvals;
+    if (!a || !(a.pending || []).length) return "";
+    return `<div class="card ctl" id="approvals"><div class="row"><span class="label">Waiting for your OK · ${a.pending.length}</span><span class="pill warn">approval mode</span></div>
+      ${a.pending.map(p => {
+        const left = minutesLeft(p.expires);
+        return `<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--rule)">
+          <div style="font:600 17px var(--sans)">${esc(propWhat(p))}</div>
+          <div class="note">Agents: <b>${esc(p.rating)}</b>${p.price ? ` · price then ${usd(p.price)}` : ""}${p.ai ? ` · AI ${esc(p.ai)}` : ""}</div>
+          <div class="note">${esc(p.reason)}</div>
+          <div class="note"><b class="${left <= 5 ? "down" : ""}">${left ? `${left} min left` : "expiring now"}</b> · then ${p.on_timeout === "trade" ? "the bot goes ahead" : "it's skipped"}</div>
+          <div class="grid" style="margin-top:8px">
+            <button class="btn" data-act="prop-approve" data-id="${esc(p.id)}" data-what="${esc(propWhat(p))}">Approve</button>
+            <button class="btn ghost" data-act="prop-deny" data-id="${esc(p.id)}">Deny</button></div>
+          ${p.report ? `<button class="chip" data-act="prop-why" data-r="${esc(p.report)}" data-t="${esc(p.ticker)}">Why? (agents' report)</button>` : ""}
+          <div id="prop-${esc(p.id)}"></div></div>`;
+      }).join("")}
+      <p class="note">Approving re-checks the risk rules with fresh prices: the order can shrink or be dropped, never grow past the amount shown. A buy is dropped if the price has run up more than 2%.</p></div>`;
+  }
+
+  const MINUTE_CHOICES = [5, 10, 15, 30, 60, 120, 240];
+  function approvalSettingsCard() {
+    if (!useServer()) return `<div class="card" style="margin-top:18px"><div class="label">Approval mode</div><p class="note">Needs the always-on bot server: it asks your phone before each trade and waits for your answer.</p></div>`;
+    const a = (data && data.approvals) || { settings: { enabled: false, minutes: 30, on_timeout: "skip" }, recent: [] };
+    const s = a.settings;
+    return `<div class="card" style="margin-top:18px"><div class="row"><span class="label">Approval mode</span><span class="pill ${s.enabled ? "live" : ""}">${s.enabled ? "on" : "off · full auto"}</span></div>
+      <p class="note">${s.enabled ? "The bot asks before every trade the agents decide on." : "The bot trades the agents' decisions on its own (inside the risk rules)."}
+        Stop-losses, take-profits, trailing stops and circuit breakers never wait. ${s.enabled ? "No new day trades open while it's on: they can't wait for an answer." : ""}</p>
+      ${s.enabled && data && data.day_trading && data.day_trading.active ? `<p class="note warn">Day trading is switched on in Goals, so its share of the money is held back for day trades that can't happen now. Turn day trading off in Goals to give that money to the swing trades.</p>` : ""}
+      <div class="grid"><label style="font-size:13px">Time to answer<select id="apMin">${MINUTE_CHOICES.map(m => `<option value="${m}" ${m === s.minutes ? "selected" : ""}>${m < 60 ? m + " min" : m / 60 + " h"}</option>`).join("")}</select></label>
+        <label style="font-size:13px">No answer<select id="apTo"><option value="skip" ${s.on_timeout === "skip" ? "selected" : ""}>skip the trade</option><option value="trade" ${s.on_timeout === "trade" ? "selected" : ""}>go ahead</option></select></label></div>
+      <button class="btn ${s.enabled ? "ghost" : ""}" data-act="appr-save" data-on="${s.enabled ? "0" : "1"}">${s.enabled ? "Turn off (full auto)" : "Turn on"}</button>
+      ${s.enabled ? `<button class="btn ghost" data-act="appr-save" data-on="1">Save time settings</button>` : ""}
+      ${(a.recent || []).length ? `<div class="label" style="margin-top:12px">Recent answers</div>${a.recent.slice(0, 6).map(p => `<div class="row" style="font-size:13px;margin-top:4px"><span>${esc(propWhat(p))}</span>
+        <span class="${p.status === "done" ? "up" : ["failed"].includes(p.status) ? "down" : "muted"}">${esc(p.status)}</span></div>${p.note ? `<div class="note" style="margin-top:0">${esc(p.note)}</div>` : ""}`).join("")}` : ""}</div>`;
+  }
+
+  async function decide(id, decision, what) {
+    const box = $(`#prop-${CSS.escape(id)}`);
+    if (box) box.innerHTML = `<div class="card"><span class="spin"></span> ${decision === "approve" ? `${esc(what)}: sent, waiting for Alpaca…` : "Denying…"}</div>`;
+    try {
+      const r = await api(`approvals/${encodeURIComponent(id)}`, { decision });
+      const msg = r.status === "denied" ? "Denied - nothing traded."
+        : r.status === "skipped" ? `Not traded: ${r.note}`
+        : r.confirmed ? `${what}: confirmed by Alpaca` : `${what}: sent - Alpaca hasn't confirmed it (${r.broker || "no fill"})`;
+      toast(msg, 8000);
+    } catch (e) { toast(srvMsg(e, decision === "approve" ? "Approving" : "Denying"), 9000); }
+    loadServer();
   }
 
   function activityCard() {
@@ -522,6 +577,7 @@
     return `<div class="hero"><div class="label">Control</div><div style="font:600 22px var(--sans)">${esc(s.label)}</div>
       <p class="note">${esc(s.detail)}</p></div>
     ${statusCard(true)}
+    ${approvalsCard()}
     ${running()}
     ${useServer() && data && data.server ? `<div class="card"><div class="label">Bot server</div><div class="note">Up since ${esc(String(data.server.up_since || "").slice(5, 16).replace("T", " "))} · last check ${esc(ago(data.server.last_tick))}
       · live prices ${data.server.streams && data.server.streams.stocks === "connected" ? "on" : "off"}${data.server.last_error ? `<br><span class="down">Last error: ${esc(data.server.last_error)}</span>` : ""}</div></div>` : ""}
@@ -536,6 +592,7 @@
       <div class="grid"><select id="buyT">${tickers.map(t => `<option>${esc(t)}</option>`).join("")}</select><input id="buyUsd" inputmode="decimal" placeholder="$ amount"></div>
       <button class="btn ghost" data-act="buy">Review buy</button>
       <p class="note">Approved stocks only. The bot caps the size, sets the stop from the stock's volatility and puts take-profit + stop on Alpaca.</p></div>` : ""}
+    ${approvalSettingsCard()}
     <div class="card" style="margin-top:22px"><div class="label">Settings</div>
       ${useServer() ? `<div class="note">Connected to your bot server: ${esc(srv.url)}</div>
         <button class="btn ghost" data-act="test-notify">Send a test notification</button>
@@ -676,6 +733,28 @@
         <button class="btn" data-act="buy-confirm" data-t="${esc(t)}" data-usd="${esc(usdAmt)}">Buy</button><button class="btn ghost" data-act="close-sheet">Cancel</button><div id="posResult"></div>`);
     },
     "buy-confirm": el => srvAction({ action: "buy", ticker: el.dataset.t, usd: +el.dataset.usd }, "#posResult"),
+    "prop-approve": el => {
+      if (!el.dataset.sure) { el.dataset.sure = "1"; el.textContent = `Tap again: ${el.dataset.what}`; return; }
+      el.disabled = true; decide(el.dataset.id, "approve", el.dataset.what);
+    },
+    "prop-deny": el => { el.disabled = true; decide(el.dataset.id, "deny", ""); },
+    "prop-why": async el => {
+      const name = el.dataset.r;
+      sheet(`<h2 style="margin:6px 0">${esc(el.dataset.t)} · the agents' reasoning</h2><div id="rep" class="md"><p class="muted">Loading…</p></div>`);
+      if (!/^[\w.-]+\.md$/.test(name)) { $("#rep").innerHTML = `<p class="muted">No report saved.</p>`; return; }
+      try {
+        const md = (await api(`report/${encodeURIComponent(name)}`)).markdown;
+        $("#rep").innerHTML = DOMPurify.sanitize(marked.parse(md), { FORBID_TAGS: ["style", "form", "input"], FORBID_ATTR: ["style"] });
+      } catch (e) { $("#rep").innerHTML = `<p class="muted">${esc(srvMsg(e, "Loading the report"))}</p>`; }
+    },
+    "appr-save": async el => {
+      const body = { enabled: el.dataset.on === "1", minutes: +$("#apMin").value, on_timeout: $("#apTo").value };
+      try {
+        await api("approval-settings", body);
+        toast(body.enabled ? `Approval mode on: the bot asks first and waits ${body.minutes} min.` : "Approval mode off: the bot trades on its own again (open proposals cancelled).", 8000);
+      } catch (e) { toast(srvMsg(e, "Approval mode"), 8000); }
+      loadServer();
+    },
     "test-notify": async () => { try { const r = await api("test-notification", {}); toast(`Sent to topic ${r.topic}. No buzz? The ntfy app must subscribe to exactly that name.`, 9000); } catch (e) { toast(srvMsg(e, "Test"), 8000); } },
     "srv-connect": () => sheet(srvConnectForm()),
     "srv-login": async () => {
@@ -804,6 +883,7 @@
     if (!cfg.token && until && $("#pin")) { if (Date.now() >= until) store.del("pin_until"); render(); }
   }, 1000);
 
+  if (location.hash === "#approvals") { tab = "home"; history.replaceState(null, "", location.pathname + location.search); }  // tapped an approval notification
   const cached = store.get("cache"); if (cached) { try { data = JSON.parse(cached); } catch {} }
   if (legacyToken && !store.get("gh_vault")) cfg.token = legacyToken;   // usable once, until a PIN is set
   render();

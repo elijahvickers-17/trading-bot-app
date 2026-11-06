@@ -21,7 +21,13 @@ const status = { updated: now, mode: "paper", state: "active", stopped: false, c
   day_trading: { active: true, share: 0.6, date: new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }), pnl: 12.5,
                  watch: [{ ticker: "NVDA", gap: 0.034 }], trades: [{ ticker: "NVDA", setup: "orb", qty: 10, fill: 190.1, pnl: 12.5 }],
                  backtest: { period: ["2026-09-11", "2026-11-05"], sleeve_equity: 6000, stats: { trades: 75, total_pnl: -75.34, return_on_sleeve: -0.0126, win_rate: 0.507, profit_factor: 0.85 } } },
-  server: { up_since: now, last_tick: now, daily_running: false, last_error: "", streams: { stocks: "connected" } }, live: null };
+  server: { up_since: now, last_tick: now, daily_running: false, last_error: "", streams: { stocks: "connected" } }, live: null,
+  approvals: { settings: { enabled: true, minutes: 30, on_timeout: "skip" },
+    pending: [{ id: "abc123def0", ticker: "NVDA", side: "buy", notional: 1200, fraction: null, rating: "Buy", price: 190.5, ai: "nvidia/x",
+                reason: "agents: Buy; stop 6.0% | odds: favorable", report: "2026-11-06_NVDA.md", expires: new Date(Date.now() + 25 * 60000).toISOString(), on_timeout: "skip", status: "pending" },
+              { id: "fff999aaa1", ticker: "ACN", side: "sell", notional: null, fraction: 1, rating: "Sell", price: 262.6, ai: "",
+                reason: "agents: Sell", report: "", expires: new Date(Date.now() + 3 * 60000).toISOString(), on_timeout: "skip", status: "pending" }],
+    recent: [{ id: "0000aaaa11", ticker: "TSLA", side: "buy", notional: 900, status: "expired", note: "no answer in time - nothing traded" }] } };
 const calls = [];
 (async () => {
   const b = await chromium.launch(); const page = await b.newPage(); const errors = [];
@@ -36,6 +42,10 @@ const calls = [];
     if (p === "events") return json([{ time: now, kind: "fill", text: "SELL ACN 1 @ 262.63 (limit)" }]);
     if (p === "goals") return json({ saved: true });
     if (p === "orders") return json([{ symbol: "ACN", side: "sell", type: "limit", qty: 1, limit: 293.81, stop: null, oco: true, status: "new" }]);
+    if (p === "approvals/abc123def0") return json({ id: "abc123def0", status: "done", confirmed: true, broker: "filled" });
+    if (p === "approvals/fff999aaa1") return json({ id: "fff999aaa1", status: "denied", confirmed: true });
+    if (p === "approval-settings") return json({ settings: JSON.parse(body), pending: [], recent: [] });
+    if (p === "report/2026-11-06_NVDA.md") return json({ markdown: "# NVDA\n\nStrong **momentum**.<img src=x onerror=alert(1)>" });
     if (p === "action") {
       const a = JSON.parse(body);
       if (a.action === "sell_half" && a.ticker === "TSLA") return json({ detail: "TSLA has 1 share(s) - can't sell half; use Close" }, 400);
@@ -56,6 +66,31 @@ const calls = [];
   const ls = await page.evaluate(() => JSON.stringify(localStorage));
   ok(!ls.includes("secret-pass-1") && ls.includes("srv_token"), "password not stored; session token is");
   ok(await page.isVisible("text=SELL ACN 1 @ 262.63"), "activity feed shows fills");
+  // approval mode
+  ok(await page.isVisible("text=Waiting for your OK · 2") && await page.isVisible("text=Buy $1,200 of NVDA"), "open proposals shown on Today");
+  ok(/3 min left/.test(await page.textContent("#approvals")) && /then it's skipped/.test(await page.textContent("#approvals")), "time left and what happens without an answer");
+  if (process.env.SHOTS) { await page.setViewportSize({ width: 390, height: 1100 }); await page.locator("#approvals").screenshot({ path: process.env.SHOTS + "/approvals.png" }); await page.setViewportSize({ width: 1280, height: 720 }); }
+  await page.click("[data-act=prop-why][data-t=NVDA]");
+  await page.waitForSelector("#rep >> text=momentum");
+  ok(!(await page.innerHTML("#rep")).includes("onerror"), "agents' report is sanitized");
+  await page.click("[data-act=close-sheet]");
+  await page.click("[data-act=prop-approve][data-id=abc123def0]");
+  ok(!calls.some(c => c[0].startsWith("approvals/")), "first tap on Approve only asks to confirm");
+  await page.click("[data-act=prop-approve][data-id=abc123def0]");
+  await page.waitForSelector("#toast >> text=confirmed by Alpaca");
+  ok(calls.some(c => c[0] === "approvals/abc123def0" && c[1].decision === "approve"), "approve sent");
+  await page.click("[data-act=prop-deny][data-id=fff999aaa1]");
+  await page.waitForSelector("#toast >> text=nothing traded");
+  ok(calls.some(c => c[0] === "approvals/fff999aaa1" && c[1].decision === "deny"), "deny is one tap");
+  await page.click("nav button[data-tab=control]");
+  ok(await page.isVisible("text=no answer in time - nothing traded"), "recent answers listed in Control");
+  await page.selectOption("#apMin", "60"); await page.click("[data-act=appr-save][data-on='1']");
+  await page.waitForTimeout(300);
+  const ap = calls.filter(c => c[0] === "approval-settings").pop();
+  ok(ap && ap[1].enabled === true && ap[1].minutes === 60 && ap[1].on_timeout === "skip", "approval settings saved");
+  await page.click("[data-act=appr-save][data-on='0']"); await page.waitForTimeout(300);
+  ok(calls.filter(c => c[0] === "approval-settings").pop()[1].enabled === false, "approval mode can be turned off");
+  await page.click("nav button[data-tab=home]");
   await page.click("nav button[data-tab=positions]");
   await page.waitForSelector("text=Orders waiting at Alpaca");
   await page.waitForSelector("text=take-profit @ $293.81");

@@ -24,6 +24,11 @@ Control → Connect to bot server: URL + app password → 30-day session token (
 `api()` to the server: status every 8–15 s with live prices, activity feed, open Alpaca orders,
 position sheet (close / sell half / break-even / edit exits / pause stock / re-place exits),
 manual buy, test notification. GitHub mode still works when no server is connected.
+Approval mode: `approvalsCard()` on Today/Control lists `status.approvals.pending` with Approve
+(two taps) / Deny / Why?, time left and what happens without an answer; `approvalSettingsCard()`
+in Control (on/off, answer window, skip vs go ahead) → `POST /api/approval-settings`. Results
+show what Alpaca confirmed, or why the server skipped it. `#approvals` (the notification link)
+opens Today.
 CSP `connect-src` allows `*.sslip.io` / `*.nip.io`; add a custom domain there if one is used.
 Tests: `node tests/server.e2e.cjs`.
 
