@@ -353,13 +353,13 @@
     const today = d.date === new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" });
     const trades = today ? d.trades || [] : [];
     return `<div class="card"><div class="row"><span class="label">Day trading · ${share}% of the money</span>
-        <span class="pill ${d.active ? "live" : ""}">${d.active ? "on" : "needs the server"}</span></div>
+        <span class="pill ${d.active ? "live" : ""}">${d.active ? "on" : d.enabled ? "needs the server" : "off"}</span></div>
       ${d.active && today ? `<div style="font:600 18px var(--sans);margin:8px 0" class="${sign(d.pnl)}">${trades.length ? `Today ${usd(d.pnl)}` : "No trades yet today"}</div>
         ${d.stopped ? `<div class="note down">${esc(d.stopped)}</div>` : ""}
         ${(d.watch || []).length ? `<div class="chips">${d.watch.map(w => `<span class="chip">${esc(w.ticker)} ${pct(w.gap, 1)}</span>`).join("")}</div>` : ""}
         ${trades.map(t => `<div class="row" style="font-size:13.5px;margin-top:6px"><span><b>${esc(t.ticker)}</b> ${esc(t.setup)} · ${esc(t.qty)} @ ${usd(t.fill || t.signal_price)}</span>
           <span class="${sign(t.pnl)}">${t.pnl != null ? usd(t.pnl) : esc(t.status || "")}</span></div>`).join("")}` : ""}
-      ${!d.active ? `<p class="note">Day trades need the always-on bot server (GitHub can't watch charts minute by minute). Until it runs, this money stays with the swing trades.</p>` : ""}
+      ${!d.active ? `<p class="note">${d.enabled ? "Day trades need the always-on bot server (GitHub can't watch charts minute by minute)." : "Switched off in Goals."} Until it runs, this money stays with the swing trades.</p>` : ""}
       ${bt ? `<p class="note">Backtest ${esc((d.backtest.period || []).join(" → "))}: ${bt.trades} trades, ${usd(bt.total_pnl)} (${pct(bt.return_on_sleeve)} of ${usd(d.backtest.sleeve_equity, 0)}), win rate ${bt.win_rate != null ? Math.round(bt.win_rate * 100) + "%" : "—"}, profit factor ${bt.profit_factor ?? "—"}.
         ${bt.total_pnl < 0 ? " <b>Losing in the test so far</b> - it stays paper-only and keeps being measured." : ""}</p>` : ""}</div>`;
   }
@@ -483,7 +483,9 @@
   function viewGoals() {
     if (!data || !data.profiles) return `<div class="empty">Goals appear after the bot's first run.</div>`;
     const g = data.goals || {};
-    draft = draft || { profile: g.profile || "growth", budget: g.budget ?? "", notes: g.notes || "", sleeves: g.sleeves ? { ...g.sleeves } : null };
+    draft = draft || { profile: g.profile || "growth", budget: g.budget ?? "", notes: g.notes || "", sleeves: g.sleeves ? { ...g.sleeves } : null,
+      day_trading: !!g.day_trading };
+    const dt = data.day_trading || {};
     const preset = (data.profiles[draft.profile] || {}).sleeves || { intraday: 0, swing: 1, long_term: 0 };
     const sl = draft.sleeves || preset;
     const pctv = x => Math.round((+x || 0) * 100);
@@ -499,7 +501,9 @@
         `<label style="font-size:13px">${name}<input data-act="none" data-sleeve="${k}" inputmode="numeric" value="${pctv(sl[k])}" style="margin-top:4px"></label>`).join("")}
     </div>
     <div class="note ${total === 100 ? "" : "down"}">${total}% ${total === 100 ? "" : "- must add up to 100%"} · ${draft.sleeves ? `custom <button class="chip" data-act="sleeves-reset">use the preset</button>` : "preset for this strategy"}</div>
-    <p class="note">Day trades open and close the same day (only while the bot server runs). Long-term money follows the swing rules for now.</p></div>
+    <p class="note">Day trades open and close the same day (only while the bot server runs). Long-term money follows the swing rules for now.</p>
+    <button class="opt ${draft.day_trading ? "on" : ""}" data-act="toggle-day"><b>Day trading: ${draft.day_trading ? "on (paper trial)" : "off"}</b>
+      <span>${dt.sweep && dt.sweep.passed === false ? `Its backtest lost money on the ${esc((dt.sweep.test_period || []).join(" → "))} test days, and none of ${esc(dt.sweep.combos)} settings held up on days they hadn't seen. Turn on only to watch it on paper.` : "Off until you switch it on."} While off, the day-trading share goes to swing trades.</span></button></div>
     <div class="label" style="margin-top:16px">Budget for the bot</div>
     <input id="gBudget" data-bind="budget" inputmode="decimal" placeholder="${esc(usd(data.capital, 0))} (current)" value="${esc(draft.budget)}">
     <div class="label">In your own words</div>
@@ -691,15 +695,16 @@
     odds: el => { store.set("odds_sel", el.dataset.t); render(); },
     profile: el => { draft.profile = el.dataset.k; draft.sleeves = null; render(); },
     "sleeves-reset": () => { draft.sleeves = null; render(); },
+    "toggle-day": () => { draft.day_trading = !draft.day_trading; render(); },
     "save-goals": async () => {
       const sl = draft.sleeves;
       if (sl && Math.abs((+sl.intraday || 0) + (+sl.swing || 0) + (+sl.long_term || 0) - 1) > 0.011) return toast("The split must add up to 100%");
       if (useServer()) {
-        const goals = { profile: draft.profile, budget: +String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim(), sleeves: sl || null };
+        const goals = { profile: draft.profile, budget: +String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim(), sleeves: sl || null, day_trading: !!draft.day_trading };
         try { await api("goals", goals); toast("Goals saved. They apply from the next check."); draft = null; loadServer(); } catch (e) { toast(srvMsg(e, "Saving goals"), 8000); }
         return;
       }
-      const goals = { profile: draft.profile, budget: String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim(), sleeves: sl || null };
+      const goals = { profile: draft.profile, budget: String(draft.budget).replace(/[$,\s]/g, "") || null, notes: String(draft.notes || "").trim(), sleeves: sl || null, day_trading: !!draft.day_trading };
       if (goals.budget && !(+goals.budget >= 50)) return toast("Budget must be at least $50");
       control("goals", { goals: JSON.stringify(goals) });
     },
